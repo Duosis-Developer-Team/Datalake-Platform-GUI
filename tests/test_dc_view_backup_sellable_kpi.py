@@ -22,7 +22,7 @@ def test_backup_inline_sellable_blocks_shell_mode_empty(dc_view_module):
     out = dc_view_module._backup_inline_sellable_blocks(
         "DC13",
         content_mode="shell",
-        include=("backup_netbackup", "backup_image"),
+        include=("backup_netbackup", "backup_veeam_replication"),
     )
     assert out == []
 
@@ -30,7 +30,7 @@ def test_backup_inline_sellable_blocks_shell_mode_empty(dc_view_module):
 def test_backup_inline_sellable_blocks_calls_kpi_for_families(dc_view_module):
     calls: list[tuple] = []
 
-    def fake_kpi(dc_id, fam, title, color="violet", selected_clusters=None, container_id=None):
+    def fake_kpi(dc_id, fam, title, color="violet", selected_clusters=None, container_id=None, subtitle=None):
         calls.append((dc_id, fam, title, color, selected_clusters, container_id))
         return MagicMock(name=f"card-{fam}")
 
@@ -42,26 +42,24 @@ def test_backup_inline_sellable_blocks_calls_kpi_for_families(dc_view_module):
             content_mode="full",
             include=(
                 "backup_netbackup",
-                "backup_image",
                 "backup_veeam_replication",
                 "backup_zerto_replication",
             ),
         )
-    assert len(out) == 4
+    assert len(out) == 3
     fams = [c[1] for c in calls]
     assert fams == [
         "backup_netbackup",
-        "backup_image",
         "backup_veeam_replication",
         "backup_zerto_replication",
     ]
     assert all(c[0] == "DC13" for c in calls)
-    # NetBackup is DC-wide; image uses hyperconv; replication uses classic.
     by_fam = {c[1]: c for c in calls}
     assert by_fam["backup_netbackup"][4] is None
-    assert by_fam["backup_image"][4] == ["h1"]
-    assert by_fam["backup_veeam_replication"][4] == ["c1"]
-    assert by_fam["backup_zerto_replication"][4] == ["c1"]
+    # Unified replication families: architecture filter only (no cluster lock).
+    assert by_fam["backup_veeam_replication"][4] is None
+    assert by_fam["backup_zerto_replication"][4] is None
     titles = [c[2] for c in calls]
     assert all(isinstance(t, str) and t for t in titles)
     assert "Potential Sales (Virtualization)" not in " ".join(titles)
+    assert "Nutanix" not in " ".join(titles)

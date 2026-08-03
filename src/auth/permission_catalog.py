@@ -132,6 +132,12 @@ def build_default_permission_roots() -> list[PermissionNode]:
                         "section",
                         sort_order=40,
                         children=[
+                            _n(
+                                "sub:dc_view:backup:total",
+                                "Backup Total Sellable",
+                                "sub_section",
+                                component_id="sellable-backup-total-card",
+                            ),
                             _n("sub:dc_view:backup:zerto", "Zerto", "sub_section"),
                             _n("sub:dc_view:backup:veeam", "Veeam", "sub_section"),
                             _n("sub:dc_view:backup:netbackup", "NetBackup", "sub_section"),
@@ -453,10 +459,24 @@ def build_default_permission_roots() -> list[PermissionNode]:
                 sort_order=65,
             ),
             _n(
-                "page:settings_crm_backup",
-                "CRM backup multipliers",
+                "page:settings_platform_backup_mapping",
+                "Platform Backup Mapping",
                 "config",
-                route_pattern="/administration/integrations/crm/backup",
+                route_pattern="/administration/platform/backup-mapping",
+                sort_order=68,
+            ),
+            _n(
+                "page:settings_platform_compute_storage",
+                "Platform Compute / Storage coupling",
+                "config",
+                route_pattern="/administration/platform/compute-storage",
+                sort_order=69,
+            ),
+            _n(
+                "page:settings_crm_backup",
+                "CRM backup multipliers (alias → Platform Backup Mapping)",
+                "config",
+                route_pattern="/administration/platform/backup-mapping",
                 sort_order=67,
             ),
             _n(

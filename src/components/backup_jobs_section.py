@@ -525,14 +525,15 @@ def should_skip_fetch(
     if vendor == "zerto":
         if cat_tab != "replication":
             return True
-        if backup_replication_tab and backup_replication_tab != "zerto":
+        # Unset nested tab → allow both vendors (shell Store may lag mount).
+        if backup_replication_tab and backup_replication_tab not in ("zerto", "replication"):
             return True
         return False
 
     if vendor == "veeam":
         if cat_tab != "replication":
             return True
-        if backup_replication_tab and backup_replication_tab != "veeam":
+        if backup_replication_tab and backup_replication_tab not in ("veeam", "replication"):
             return True
         return False
 

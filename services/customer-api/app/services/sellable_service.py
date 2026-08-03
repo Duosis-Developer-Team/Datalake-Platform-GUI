@@ -122,7 +122,7 @@ _NETBACKUP_DC_POOL_TIMEOUT: float = float(os.getenv("SELLABLE_NETBACKUP_DC_TIMEO
 _SELLABLE_CACHE_TTL: int = int(os.getenv("SELLABLE_CACHE_TTL_SECONDS", "3600"))
 
 # Bump when panel payload semantics change (invalidates tier-1/tier-2 cached snapshots).
-SELLABLE_PAYLOAD_VERSION: int = 11
+SELLABLE_PAYLOAD_VERSION: int = 12
 
 # Site-scoped S3 panels map to datalake pool_name prefixes (not city substrings).
 _SITE_SCOPED_PANEL_PATTERNS: dict[str, str] = {
@@ -221,21 +221,71 @@ _REDIS_FIELD_UNITS: dict[tuple[str, str], str] = {
 
 # Maps panel family → datacenter-api compute endpoint kind.
 # backup_netbackup uses /compute/backup-netbackup (pool usable + used; PostDedup semantics).
-# Replication families use the dedicated classic-host-pool alias endpoint.
+# Replication families use the dedicated host-pool alias endpoint (classic or HC).
 # backup_image uses the dedicated Nutanix-backed storage endpoint.
 _FAMILY_COMPUTE_ENDPOINT: dict[str, str] = {
     "virt_classic":              "classic",
     "virt_hyperconverged":       "hyperconverged",
+    "virt_power":                "power",
     "backup_netbackup":          "backup-netbackup",
     "backup_veeam_replication":  "backup-replication",
     "backup_zerto_replication":  "backup-replication",
+    "backup_veeam_replication_classic": "backup-replication",
+    "backup_zerto_replication_classic": "backup-replication",
+    "backup_veeam_replication_hyperconverged": "backup-replication",
+    "backup_zerto_replication_hyperconverged": "backup-replication",
     "backup_image":              "backup-nutanix",
 }
 
+_REPLICATION_HC_FAMILIES: frozenset[str] = frozenset({
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
+})
+
 # Replication sellable competes with virt free capacity (primary vs alternate pool).
+# Only CPU/RAM — storage is dedicated (Veeam/Zerto-eligible datastores).
 _REPLICATION_ALTERNATE_FAMILIES: frozenset[str] = frozenset({
     "backup_veeam_replication",
     "backup_zerto_replication",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
+})
+_REPLICATION_ALTERNATE_KINDS: frozenset[str] = frozenset({"cpu", "ram"})
+
+# Families that must not run apply_storage_ratio_cap under built-in / auto:
+# - storage-only backup (no CPU/RAM → false compute_bottleneck)
+# - replication (dedicated DS pool; auto ≡ separate — ADR-0032)
+# Operator 'merged' on Compute / Storage still forces the cap below
+# (coupling_mode == "merged" → cap_storage = True).
+_SKIP_STORAGE_RATIO_CAP_FAMILIES: frozenset[str] = frozenset({
+    "backup_netbackup",
+    "backup_image",
+    "backup_veeam_replication",
+    "backup_zerto_replication",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
+})
+
+# Alias kept for tests / call sites that check storage-only NetBackup/image.
+_STORAGE_ONLY_BACKUP_FAMILIES: frozenset[str] = frozenset({
+    "backup_netbackup",
+    "backup_image",
+})
+
+# Families that may use /compute without an explicit cluster list (DC-wide).
+_CLUSTERLESS_COMPUTE_FAMILIES: frozenset[str] = frozenset({
+    "backup_netbackup",
+    "backup_image",
+    "backup_veeam_replication",
+    "backup_zerto_replication",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
 })
 
 # NetBackup Image + Application share one disk pool (fully shared min/max).
@@ -249,7 +299,51 @@ _NETBACKUP_SHARED_PANEL_KEYS: frozenset[str] = frozenset({
 # constraint and the family unit count is the sum across hosts. Storage is
 # excluded from the per-host min() and handled by the architecture-aware
 # storage range model below.
-_HOST_BASED_FAMILIES: frozenset[str] = frozenset({"virt_classic", "virt_hyperconverged"})
+#
+# virt_power joined this set once datacenter-api grew /compute/power/hosts: an
+# IBM frame bounds its partitions exactly like a hypervisor host bounds its VMs,
+# so one DC-wide min() was wrong in both directions -- it hid per-frame
+# bottlenecks, and a single over-threshold DC total zeroed every frame in it.
+# Measured 2026-08-02 that gate was blocking DC11, DC13 and DC15 outright.
+#
+# Replication Classic/HC CPU/RAM must use the same host SoT as virt (ADR-0032 §37).
+_REPLICATION_HOST_SOURCE_FAMILY: dict[str, str] = {
+    "backup_veeam_replication_classic": "virt_classic",
+    "backup_zerto_replication_classic": "virt_classic",
+    "backup_veeam_replication_hyperconverged": "virt_hyperconverged",
+    "backup_zerto_replication_hyperconverged": "virt_hyperconverged",
+}
+
+_HOST_BASED_FAMILIES: frozenset[str] = frozenset({
+    "virt_classic",
+    "virt_hyperconverged",
+    "virt_power",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
+})
+
+# Host-based families whose STORAGE panel still comes from the aggregate path.
+# Power frames report no storage of their own; replication uses dedicated DS endpoints.
+_HOST_COMPUTE_ONLY_FAMILIES: frozenset[str] = frozenset({
+    "virt_power",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
+})
+
+# Families whose host rows are DC-wide and carry no cluster. Passing the caller's
+# cluster filter would match nothing and silently drop the family to the cluster
+# fallback; the aggregate path ignored the filter for these too.
+_CLUSTERLESS_HOST_ROW_FAMILIES: frozenset[str] = frozenset({"virt_power"})
+
+# CPU capacity unit of a family's host rows. Power frames report cores (procunits
+# x 8) because the virt_power ratio is expressed in cores; everything else
+# reports GHz. host_raw_headroom reads cpu_cap_ghz raw, so this drives the
+# conversion to the panel's display unit and nothing else.
+_FAMILY_HOST_CPU_UNIT: dict[str, str] = {"virt_power": "Core"}
 
 # Power families: allocation track only (no max/utilization dual track except CPU util gate).
 _ALLOCATION_ONLY_FAMILIES: frozenset[str] = frozenset({"virt_power", "virt_power_hana"})
@@ -277,6 +371,58 @@ _RESOURCE_KIND_TO_UTIL_FIELDS: dict[str, tuple[str, ...]] = {
     "storage": ("stor_pct", "stor_alloc_vm_pct"),
 }
 
+def _coupling_to_triple_override(mode: str) -> bool | None:
+    """Map a coupling mode onto the per-host ``storage_in_triple`` decision.
+
+    ``auto`` returns None so ``host_storage_in_triple`` keeps deciding per host.
+    """
+    if mode == "merged":
+        return True
+    if mode == "separate":
+        return False
+    return None
+
+
+def _host_cluster_name(host: dict) -> str:
+    """Cluster a host row belongs to, as the compute API spells it."""
+    for key in ("cluster", "cluster_name", "cluster_id"):
+        value = host.get(key)
+        if value:
+            return str(value).strip()
+    return ""
+
+
+def _validate_coupling_row(
+    family, dc_code, scope_kind, scope_key, mode,
+) -> tuple[str, str, str, str, str]:
+    """Normalise and check one coupling row before it reaches the DB.
+
+    The table's CHECK constraints reject a family row with a key (or a cluster
+    row without one); catching it here turns a 500 into a clear 400 and keeps
+    the two spellings of "the family default" from ever both existing.
+    """
+    family = str(family or "").strip()
+    if not family:
+        raise ValueError("family is required")
+    dc_code = str(dc_code or "*").strip() or "*"
+    scope_kind = str(scope_kind or "family").strip().lower()
+    if scope_kind not in STORAGE_COUPLING_SCOPES:
+        raise ValueError(f"invalid coupling scope: {scope_kind!r}")
+    scope_key = str(scope_key or "").strip()
+    if scope_kind == "family":
+        scope_key = ""
+    elif not scope_key:
+        raise ValueError("cluster-scoped coupling needs a cluster name")
+    elif dc_code == "*":
+        # Cluster names are DC-local; a global cluster rule would silently apply
+        # to any DC that happens to reuse the name.
+        raise ValueError("cluster-scoped coupling needs a concrete dc_code")
+    mode = str(mode or "auto").strip().lower()
+    if mode not in STORAGE_COUPLING_MODES:
+        raise ValueError(f"invalid coupling mode: {mode!r}")
+    return family, dc_code, scope_kind, scope_key, mode
+
+
 # virt_power_hana shares IBM Power infrastructure with virt_power.
 _POWER_HANA_INFRA_ALIASES: dict[str, str] = {
     "virt_power_hana_cpu": "virt_power_cpu",
@@ -298,7 +444,9 @@ from app.services.webui_db import WebuiPool
 from shared.colocation import occupancy as coloc_occ
 from shared.licensing import os_sql
 from shared.sellable.computation import (
+    StorageInTripleOverride,
     annotate_panel_constraint_metadata,
+    apply_storage_dual_track_ratio_caps,
     apply_storage_ratio_cap,
     apply_threshold,
     apply_utilization_gate,
@@ -315,6 +463,8 @@ from shared.sellable.computation import (
     utilization_gate_blocked,
 )
 from shared.sellable.models import (
+    STORAGE_COUPLING_MODES,
+    STORAGE_COUPLING_SCOPES,
     DashboardSummary,
     FamilyAggregate,
     InfraSource,
@@ -322,6 +472,7 @@ from shared.sellable.models import (
     PanelDefinition,
     PanelResult,
     ResourceRatio,
+    StorageCoupling,
     UnitConversion,
 )
 
@@ -436,6 +587,174 @@ class SellableService:
             ram_gb_per_unit=float(row["ram_gb_per_unit"]),
             storage_gb_per_unit=float(row["storage_gb_per_unit"]),
             notes=row.get("notes"),
+        )
+
+    def list_storage_couplings(self) -> list[StorageCoupling]:
+        """Every compute/storage coupling row (family x dc_code).
+
+        Never raises: the sellable pipeline must keep its built-in behaviour when
+        the config DB (or migration 037) is missing.
+        """
+        webui = getattr(self, "_webui", None)
+        if webui is None or not webui.is_available:
+            return []
+        try:
+            rows = webui.run_rows(sq.LIST_STORAGE_COUPLINGS)
+        except Exception:
+            # Table lands with migration 037; older DBs keep the built-in behaviour.
+            logger.warning("gui_family_storage_coupling unavailable — coupling defaults to auto")
+            return []
+        return [
+            StorageCoupling(
+                family=r["family"],
+                dc_code=r["dc_code"],
+                mode=(r.get("mode") or "auto"),
+                notes=r.get("notes"),
+                updated_by=r.get("updated_by"),
+                # Pre-038 databases have neither column; treat those rows as
+                # family-scoped so an un-migrated DB keeps working.
+                scope_kind=(r.get("scope_kind") or "family"),
+                scope_key=(r.get("scope_key") or ""),
+            )
+            for r in rows
+        ]
+
+    def _build_coupling_lookup(self) -> dict[tuple[str, str, str, str], str]:
+        """``(family, dc_code, scope_kind, scope_key) -> mode`` map."""
+        return {
+            (c.family, c.dc_code, c.scope_kind, c.scope_key): c.mode
+            for c in self.list_storage_couplings()
+        }
+
+    def resolve_storage_coupling(
+        self,
+        family: str,
+        dc_code: str = "*",
+        lookup: "dict[tuple[str, str, str, str], str] | None" = None,
+        *,
+        cluster: str = "",
+    ) -> str:
+        """Most specific scope wins; missing rows mean ``auto``.
+
+        Order: this DC's cluster row, this DC's family row, the ``'*'`` family
+        row. A cluster row at ``'*'`` is deliberately not consulted — cluster
+        names are DC-local, so a global cluster rule would be a coincidence.
+        """
+        table = self._build_coupling_lookup() if lookup is None else lookup
+        candidates: list[tuple[str, str, str, str]] = []
+        if cluster and dc_code and dc_code != "*":
+            candidates.append((family, dc_code, "cluster", cluster))
+        candidates.append((family, dc_code, "family", ""))
+        candidates.append((family, "*", "family", ""))
+        for key in candidates:
+            mode = table.get(key)
+            if mode in STORAGE_COUPLING_MODES:
+                return mode
+        return "auto"
+
+    def build_host_coupling_resolver(
+        self,
+        family: str,
+        dc_code: str,
+        lookup: "dict[tuple[str, str, str, str], str]",
+    ):
+        """Per-host ``storage_in_triple`` override honouring cluster scope.
+
+        Returns None when the family has no cluster rows in this DC, so the
+        common case still passes a plain bool/None down to the computation layer
+        and nothing changes for callers that never used cluster scope.
+        """
+        cluster_rows = {
+            key[3]: mode
+            for key, mode in lookup.items()
+            if key[0] == family and key[1] == dc_code and key[2] == "cluster"
+        }
+        family_mode = self.resolve_storage_coupling(family, dc_code, lookup)
+        if not cluster_rows or not dc_code or dc_code == "*":
+            return _coupling_to_triple_override(family_mode)
+
+        family_override = _coupling_to_triple_override(family_mode)
+
+        def _resolve(host: dict) -> bool | None:
+            mode = cluster_rows.get(_host_cluster_name(host))
+            if mode in STORAGE_COUPLING_MODES:
+                return _coupling_to_triple_override(mode)
+            return family_override
+
+        return _resolve
+
+    def upsert_storage_coupling(
+        self,
+        family: str,
+        *,
+        dc_code: str = "*",
+        mode: str = "auto",
+        notes: str | None = None,
+        updated_by: str = "ui",
+        scope_kind: str = "family",
+        scope_key: str = "",
+    ) -> None:
+        family, dc_code, scope_kind, scope_key, mode = _validate_coupling_row(
+            family, dc_code, scope_kind, scope_key, mode,
+        )
+        if not self._webui.is_available:
+            raise RuntimeError("WebUI configuration DB not available")
+        self._webui.execute(
+            sq.UPSERT_STORAGE_COUPLING,
+            (family, dc_code, scope_kind, scope_key, mode, notes, updated_by),
+        )
+
+    def upsert_storage_couplings(
+        self,
+        rows: "list[dict]",
+        *,
+        updated_by: str = "ui",
+    ) -> int:
+        """Save a whole board in one transaction (drag-and-drop editor)."""
+        if not self._webui.is_available:
+            raise RuntimeError("WebUI configuration DB not available")
+        statements: list[tuple[str, tuple]] = []
+        for row in rows:
+            family, dc_code, scope_kind, scope_key, mode = _validate_coupling_row(
+                row.get("family"),
+                row.get("dc_code"),
+                row.get("scope_kind"),
+                row.get("scope_key"),
+                row.get("mode"),
+            )
+            statements.append((
+                sq.UPSERT_STORAGE_COUPLING,
+                (
+                    family,
+                    dc_code,
+                    scope_kind,
+                    scope_key,
+                    mode,
+                    row.get("notes"),
+                    updated_by,
+                ),
+            ))
+        if not statements:
+            return 0
+        self._webui.execute_all(statements)
+        return len(statements)
+
+    def delete_storage_coupling(
+        self,
+        family: str,
+        dc_code: str,
+        *,
+        scope_kind: str = "family",
+        scope_key: str = "",
+    ) -> None:
+        """Drop an override so the scope falls back to the next one up."""
+        family, dc_code, scope_kind, scope_key, _ = _validate_coupling_row(
+            family, dc_code, scope_kind, scope_key, "auto",
+        )
+        if not self._webui.is_available:
+            raise RuntimeError("WebUI configuration DB not available")
+        self._webui.execute(
+            sq.DELETE_STORAGE_COUPLING, (family, dc_code, scope_kind, scope_key),
         )
 
     def list_unit_conversions(self) -> list[UnitConversion]:
@@ -1066,31 +1385,73 @@ SELECT _tot, _alloc FROM latest
         }
 
     def _fetch_netbackup_pool_bytes(self) -> dict[str, float]:
-        """Pool capacity bytes — prefer datacenter-api per-DC path, else SQL fallback."""
-        pools = self._aggregate_netbackup_pools_via_dc_api()
-        if pools is not None:
-            return pools
+        """Pool capacity bytes across all DCs (usable / used / available).
+
+        Prefer datacenter-api per-DC sum for DC View parity, but if the SQL
+        global DISTINCT ON host+name total is materially larger (partial DC-api
+        failures), use SQL so CRM Inventory Total is platform-wide.
+        """
+        api_pools = self._aggregate_netbackup_pools_via_dc_api()
+        sql_pools: dict[str, float] | None = None
         try:
-            return self._aggregate_netbackup_pools_via_sql_fallback()
+            sql_pools = self._aggregate_netbackup_pools_via_sql_fallback()
         except Exception:  # noqa: BLE001
             logger.exception("SellableService: NetBackup SQL pool fallback failed")
+        if api_pools is None and sql_pools is None:
             return {
                 "total_bytes": 0.0,
                 "used_pool_bytes": 0.0,
                 "available_bytes": 0.0,
             }
+        if api_pools is None:
+            return sql_pools or {
+                "total_bytes": 0.0,
+                "used_pool_bytes": 0.0,
+                "available_bytes": 0.0,
+            }
+        if sql_pools is None:
+            return api_pools
+        api_total = float(api_pools.get("total_bytes") or 0.0)
+        sql_total = float(sql_pools.get("total_bytes") or 0.0)
+        # Prefer SQL only when DC-api looks under-counted (e.g. one DC) and SQL
+        # is modestly larger — not when SQL is wildly inflated (DISTINCT ON miss).
+        if api_total <= 0 and sql_total > 0:
+            return sql_pools
+        if (
+            api_total > 0
+            and sql_total > api_total * 1.05
+            and sql_total <= api_total * 4.0
+        ):
+            logger.warning(
+                "SellableService: NetBackup pool SQL total_bytes=%.0f exceeds "
+                "DC-api total_bytes=%.0f — using SQL for platform-wide Total",
+                sql_total,
+                api_total,
+            )
+            return sql_pools
+        if sql_total > api_total * 4.0:
+            logger.warning(
+                "SellableService: NetBackup SQL total_bytes=%.0f >> DC-api "
+                "total_bytes=%.0f — keeping DC-api (SQL likely over-count)",
+                sql_total,
+                api_total,
+            )
+        return api_pools
 
     def _fetch_netbackup_jobs_dedup_summary(self) -> tuple[float, float]:
-        """Pre/post dedup GiB from finished BACKUP jobs in the default 7d window."""
+        """Pre/post from finished BACKUP jobs (all time until retention exists).
+
+        Pre = SUM(kilobytestransferred) — job transfer, not a native pre_dedup column.
+        Post = SUM(transfer / dedupratio) — estimated on-disk footprint.
+        """
         _gib = 1024.0 ** 3
-        start_ts, end_ts = time_range_to_bounds(default_time_range())
         try:
             with self._svc._get_connection() as conn:
                 with conn.cursor() as cur:
                     dedup_row = self._svc._run_row(
                         cur,
-                        sq.GLOBAL_NETBACKUP_JOBS_DEDUP_SUMMARY,
-                        (start_ts, end_ts),
+                        sq.GLOBAL_NETBACKUP_JOBS_DEDUP_SUMMARY_ALL,
+                        (),
                     )
         except Exception:  # noqa: BLE001
             logger.exception("SellableService: NetBackup jobs dedup summary failed")
@@ -1100,6 +1461,93 @@ SELECT _tot, _alloc FROM latest
         pre_gib = float(dedup_row[0] or 0.0)
         post_gib = float(dedup_row[1] or 0.0)
         return pre_gib * _gib, post_gib * _gib
+
+    def _netbackup_image_policy_types(self) -> list[str]:
+        """Policy types classified as Image (default VMWARE)."""
+        try:
+            from shared.backup.policy_classification import (
+                DEFAULT_NETBACKUP_IMAGE_POLICYTYPES,
+                load_policy_panel_mapping,
+            )
+
+            cfg = load_policy_panel_mapping()
+            types = [
+                str(t).strip().upper()
+                for t in (cfg.get("image_policy_types") or DEFAULT_NETBACKUP_IMAGE_POLICYTYPES)
+                if str(t).strip()
+            ]
+            return types or sorted(DEFAULT_NETBACKUP_IMAGE_POLICYTYPES)
+        except Exception:  # noqa: BLE001
+            logger.exception("SellableService: load NetBackup image_policy_types failed")
+            return ["VMWARE"]
+
+    def _fetch_netbackup_jobs_dedup_summary_by_category(self) -> dict[str, tuple[float, float]]:
+        """Pre/post GiB→bytes per Image/Application category (finished BACKUP jobs)."""
+        _gib = 1024.0 ** 3
+        empty = {"image": (0.0, 0.0), "application": (0.0, 0.0)}
+        image_types = self._netbackup_image_policy_types()
+        try:
+            with self._svc._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._svc._run_rows(
+                        cur,
+                        sq.GLOBAL_NETBACKUP_JOBS_DEDUP_SUMMARY_BY_CATEGORY,
+                        (image_types,),
+                    )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "SellableService: NetBackup jobs dedup summary by category failed",
+            )
+            return empty
+        out = dict(empty)
+        for r in rows or []:
+            if isinstance(r, dict):
+                cat = str(r.get("category") or "").strip().lower()
+                pre_gib = float(r.get("pre_dedup_gib") or 0.0)
+                post_gib = float(r.get("post_dedup_gib") or 0.0)
+            elif isinstance(r, (list, tuple)) and len(r) >= 3:
+                cat = str(r[0] or "").strip().lower()
+                pre_gib = float(r[1] or 0.0)
+                post_gib = float(r[2] or 0.0)
+            else:
+                continue
+            if cat in out:
+                out[cat] = (pre_gib * _gib, post_gib * _gib)
+        return out
+
+    def list_netbackup_jobs_disk_footprint(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        """Per finished BACKUP job: transfer, dedupratio, on-disk footprint.
+
+        Retention filter deferred — currently all percentcomplete=100 rows.
+        """
+        lim = max(1, min(int(limit or 500), 5000))
+        try:
+            with self._svc._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._svc._run_rows(
+                        cur,
+                        sq.GLOBAL_NETBACKUP_JOBS_DISK_FOOTPRINT,
+                        (lim,),
+                    )
+        except Exception:  # noqa: BLE001
+            logger.exception("SellableService: NetBackup jobs disk footprint failed")
+            return []
+        out: list[dict[str, Any]] = []
+        for r in rows or []:
+            if isinstance(r, dict):
+                out.append(r)
+            elif isinstance(r, (list, tuple)) and len(r) >= 8:
+                out.append({
+                    "jobid": r[0],
+                    "jobtype": r[1],
+                    "policyname": r[2],
+                    "policytype": r[3],
+                    "kilobytestransferred": r[4],
+                    "dedupratio": r[5],
+                    "footprint_kb": r[6],
+                    "collection_timestamp": r[7],
+                })
+        return out
 
     def _query_netbackup_storage_totals(
         self,
@@ -1175,9 +1623,23 @@ SELECT _tot, _alloc FROM latest
         value = float(detected or 0)
         return value, value
 
-    def get_netbackup_inventory_metrics(self) -> dict[str, float]:
-        """Global NetBackup pool capacity (DC-api path), physical free, jobs dedup (7d)."""
-        zero = {
+    @staticmethod
+    def _netbackup_category_slice(pre_bytes: float, post_bytes: float) -> dict[str, float]:
+        savings_bytes = max(pre_bytes - post_bytes, 0.0)
+        savings_pct = (savings_bytes / pre_bytes * 100.0) if pre_bytes > 0 else 0.0
+        dedup_factor = (pre_bytes / post_bytes) if post_bytes > 0 else 0.0
+        return {
+            "pre_dedup_bytes": pre_bytes,
+            "used_post_dedup_bytes": post_bytes,
+            "dedup_savings_bytes": savings_bytes,
+            "dedup_savings_pct": savings_pct,
+            "dedup_factor": dedup_factor,
+        }
+
+    def get_netbackup_inventory_metrics(self) -> dict[str, Any]:
+        """Global NetBackup pool (shared) + jobs Pre/Post by Image/Application category."""
+        zero_cat = self._netbackup_category_slice(0.0, 0.0)
+        zero: dict[str, Any] = {
             "total_bytes": 0.0,
             "used_pool_bytes": 0.0,
             "used_post_dedup_bytes": 0.0,
@@ -1186,9 +1648,14 @@ SELECT _tot, _alloc FROM latest
             "dedup_savings_bytes": 0.0,
             "dedup_savings_pct": 0.0,
             "dedup_factor": 0.0,
+            "by_category": {
+                "image": dict(zero_cat),
+                "application": dict(zero_cat),
+            },
         }
         try:
             pools = self._fetch_netbackup_pool_bytes()
+            by_cat_bytes = self._fetch_netbackup_jobs_dedup_summary_by_category()
             pre_bytes, post_bytes = self._fetch_netbackup_jobs_dedup_summary()
         except Exception:  # noqa: BLE001
             logger.exception(
@@ -1199,18 +1666,23 @@ SELECT _tot, _alloc FROM latest
         total_bytes = float(pools.get("total_bytes") or 0.0)
         used_pool_bytes = float(pools.get("used_pool_bytes") or 0.0)
         available_bytes = float(pools.get("available_bytes") or 0.0)
-        savings_bytes = max(pre_bytes - post_bytes, 0.0)
-        savings_pct = (savings_bytes / pre_bytes * 100.0) if pre_bytes > 0 else 0.0
-        dedup_factor = (pre_bytes / post_bytes) if post_bytes > 0 else 0.0
+        image_pre, image_post = by_cat_bytes.get("image", (0.0, 0.0))
+        app_pre, app_post = by_cat_bytes.get("application", (0.0, 0.0))
+        # Prefer category sum for flat totals when available; else all-jobs summary.
+        cat_pre = image_pre + app_pre
+        cat_post = image_post + app_post
+        if cat_pre <= 0.0 and cat_post <= 0.0:
+            cat_pre, cat_post = pre_bytes, post_bytes
+        flat = self._netbackup_category_slice(cat_pre, cat_post)
         return {
             "total_bytes": total_bytes,
             "used_pool_bytes": used_pool_bytes,
-            "used_post_dedup_bytes": post_bytes,
-            "pre_dedup_bytes": pre_bytes,
             "available_bytes": available_bytes,
-            "dedup_savings_bytes": savings_bytes,
-            "dedup_savings_pct": savings_pct,
-            "dedup_factor": dedup_factor,
+            **flat,
+            "by_category": {
+                "image": self._netbackup_category_slice(image_pre, image_post),
+                "application": self._netbackup_category_slice(app_pre, app_post),
+            },
         }
 
     def _query_total_allocated(
@@ -1589,28 +2061,236 @@ SELECT _tot, _alloc FROM latest
         payload = self._load_dc_redis_payload(dc_code)
         return self._extract_allocated_from_payload(payload, src, dc_code)
 
+    @staticmethod
+    def _merge_compute_capacity(a: "dict | None", b: "dict | None") -> "dict | None":
+        """Sum numeric capacity fields from two /compute responses (classic + HC)."""
+        if not a and not b:
+            return None
+        if not a:
+            return dict(b) if isinstance(b, dict) else None
+        if not b:
+            return dict(a) if isinstance(a, dict) else None
+        out = dict(a)
+        for key in (
+            "cpu_cap",
+            "cpu_alloc_ghz_sales",
+            "mem_cap",
+            "mem_alloc_gb_vm",
+            "stor_cap",
+            "stor_provisioned_gb",
+        ):
+            try:
+                out[key] = float(a.get(key) or 0.0) + float(b.get(key) or 0.0)
+            except (TypeError, ValueError):
+                continue
+        notes: list[str] = []
+        for src in (a, b):
+            raw_notes = src.get("notes") if isinstance(src, dict) else None
+            if isinstance(raw_notes, list):
+                for n in raw_notes:
+                    if n and n not in notes:
+                        notes.append(str(n))
+        notes.append("unified replication compute: classic + hyperconverged host pools")
+        out["notes"] = notes
+        out["architecture"] = "unified"
+        return out
+
     def _fetch_raw_compute_response(
-        self, dc_code: str, family: str, clusters: list[str]
+        self, dc_code: str, family: str, clusters: list[str] | None = None
     ) -> "dict | None":
-        """Fetch the raw /compute/{kind}?clusters=... JSON once per family.
+        """Fetch the raw /compute/{kind} JSON once per family.
 
         Called from ``compute_all_panels`` so the same response is shared by all
         resource_kind panels (cpu/ram/storage) of the same family — 3 HTTP calls
-        → 1 HTTP call per family when clusters are provided.
+        → 1 HTTP call per family when clusters are provided. Clusterless families
+        (NetBackup / Nutanix image / replication) omit the clusters query param.
+
+        Unified Veeam/Zerto families sum classic + HC host pools (architecture
+        is UI filter only; Potential Sales uses one family card).
         """
         kind = _FAMILY_COMPUTE_ENDPOINT.get(family)
-        if not kind or not clusters or not dc_code or dc_code == "*" or not self._dc_api_url:
+        if not kind or not dc_code or dc_code == "*" or not self._dc_api_url:
             return None
-        csv = ",".join(c for c in clusters if c)
-        url = f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}?clusters={csv}"
+        cl = [c for c in (clusters or []) if c]
+        if not cl and family not in _CLUSTERLESS_COMPUTE_FAMILIES:
+            return None
+
+        def _one(architecture: str | None = None) -> "dict | None":
+            if cl:
+                csv = ",".join(cl)
+                url = (
+                    f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}"
+                    f"?clusters={csv}"
+                )
+            else:
+                url = f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/{kind}"
+            if architecture and kind == "backup-replication":
+                sep = "&" if "?" in url else "?"
+                url = f"{url}{sep}architecture={architecture}"
+            try:
+                resp = httpx.get(url, timeout=15.0)
+                resp.raise_for_status()
+                data = resp.json()
+                return data if isinstance(data, dict) else None
+            except Exception:
+                logger.exception(
+                    "compute raw fetch failed dc=%s family=%s arch=%s url=%s",
+                    dc_code, family, architecture, url,
+                )
+                return None
+
+        if family in _REPLICATION_ALTERNATE_FAMILIES and kind == "backup-replication":
+            if family in _REPLICATION_HC_FAMILIES:
+                return _one("hyperconverged")
+            if family.endswith("_classic"):
+                return _one("classic")
+            # Unified family: classic + HC
+            return self._merge_compute_capacity(_one("classic"), _one("hyperconverged"))
+
+        return _one(None)
+
+    def _fetch_veeam_datastore_storage(
+        self, dc_code: str, *, include_nutanix: bool = False
+    ) -> "dict | None":
+        """Fetch Veeam replication storage (all VMware DS except NetBackup)."""
+        if not dc_code or dc_code == "*" or not self._dc_api_url:
+            return None
+        flag = "true" if include_nutanix else "false"
+        url = (
+            f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/backup-veeam-storage"
+            f"?include_nutanix={flag}"
+        )
         try:
             resp = httpx.get(url, timeout=15.0)
             resp.raise_for_status()
             data = resp.json()
-            return data if isinstance(data, dict) else None
+            if not isinstance(data, dict):
+                return None
+            if float(data.get("stor_cap") or 0) <= 0 and int(data.get("datastore_count") or 0) <= 0:
+                return None
+            return data
         except Exception:
-            logger.exception("compute raw fetch failed dc=%s family=%s url=%s", dc_code, family, url)
+            logger.exception("veeam datastore storage fetch failed dc=%s url=%s", dc_code, url)
             return None
+
+    def _fetch_zerto_datastore_storage(
+        self, dc_code: str, *, include_nutanix: bool = False
+    ) -> "dict | None":
+        """Fetch Zerto-eligible VMware storage (except Veeam + NetBackup)."""
+        if not dc_code or dc_code == "*" or not self._dc_api_url:
+            return None
+        flag = "true" if include_nutanix else "false"
+        url = (
+            f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/backup-zerto-storage"
+            f"?include_nutanix={flag}"
+        )
+        try:
+            resp = httpx.get(url, timeout=15.0)
+            resp.raise_for_status()
+            data = resp.json()
+            if not isinstance(data, dict):
+                return None
+            if float(data.get("stor_cap") or 0) <= 0 and int(data.get("datastore_count") or 0) <= 0:
+                return None
+            return data
+        except Exception:
+            logger.exception("zerto datastore storage fetch failed dc=%s url=%s", dc_code, url)
+            return None
+
+    def _aggregate_replication_storage_multi(
+        self,
+        family: str,
+        dc_codes: list[str],
+    ) -> tuple[float, float, float | None] | None:
+        """Sum Veeam/Zerto DS storage across DCs for global inventory HOST_DUAL.
+
+        HC prefers ``include_nutanix=true``; if every DC fails, fall back to
+        classic DS-only so Zerto/Veeam HC storage rows still get ``has_infra``.
+        """
+        codes = [c for c in (dc_codes or []) if c and c != "*"]
+        if not codes:
+            return None
+        is_veeam = family.startswith("backup_veeam_replication")
+        is_zerto = family.startswith("backup_zerto_replication")
+        if not is_veeam and not is_zerto:
+            return None
+        prefer_ntnx = family in _REPLICATION_HC_FAMILIES
+        for include_ntnx in ((True, False) if prefer_ntnx else (False,)):
+            total = 0.0
+            allocated = 0.0
+            util_weighted = 0.0
+            weight = 0.0
+            ok = 0
+            for code in codes:
+                raw = (
+                    self._fetch_veeam_datastore_storage(code, include_nutanix=include_ntnx)
+                    if is_veeam
+                    else self._fetch_zerto_datastore_storage(code, include_nutanix=include_ntnx)
+                )
+                metrics = self._extract_compute_metrics(raw, "storage") if raw else None
+                if metrics is None:
+                    continue
+                cap, used, _unit = metrics
+                total += cap
+                allocated += used
+                util = self._extract_utilization_pct(raw, "storage")
+                if util is not None and cap > 0:
+                    util_weighted += util * cap
+                    weight += cap
+                ok += 1
+            if ok == 0 or total <= 0:
+                continue
+            util_pct = (util_weighted / weight) if weight > 0 else None
+            if prefer_ntnx and not include_ntnx:
+                logger.warning(
+                    "replication storage multi: HC family=%s Nutanix path empty; "
+                    "using classic DS-only across %d DC(s)",
+                    family,
+                    ok,
+                )
+            return total, allocated, util_pct
+        return None
+
+    def _apply_replication_storage_multi(
+        self,
+        storage_panels: list[PanelResult],
+        family: str,
+        dc_codes: list[str],
+        unit_lookup: dict,
+    ) -> list[PanelResult]:
+        """Fill deferred replication storage panels from multi-DC DS endpoints."""
+        if not storage_panels:
+            return storage_panels
+        agg = self._aggregate_replication_storage_multi(family, dc_codes)
+        if agg is None:
+            return storage_panels
+        # Endpoint stor_cap / provisioned are in TB (see _RESOURCE_KIND_TO_COMPUTE_FIELDS).
+        total_tb, alloc_tb, util_pct = agg
+        include_ntnx = family in _REPLICATION_HC_FAMILIES
+        vendor = "veeam" if family.startswith("backup_veeam") else "zerto"
+        note = (
+            f"via datacenter-api/compute/backup-{vendor}-storage "
+            f"(multi-DC n={len([c for c in dc_codes if c and c != '*'])}"
+            + (", +Nutanix" if include_ntnx else "")
+            + ")"
+        )
+        out: list[PanelResult] = []
+        for sto in storage_panels:
+            conv = self._lookup_conversion(unit_lookup, "TB", sto.display_unit)
+            total_disp = convert_unit(total_tb, conv) if conv else total_tb
+            alloc_disp = convert_unit(alloc_tb, conv) if conv else alloc_tb
+            sto.total = total_disp
+            sto.allocated = alloc_disp
+            sto.has_infra_source = True
+            sto.sellable_raw = apply_utilization_gate(
+                total_disp, alloc_disp, util_pct, sto.threshold_pct,
+            )
+            sto.sellable_constrained = float(sto.sellable_raw or 0.0)
+            sto.potential_tl = compute_potential_tl(sto.sellable_constrained, sto.unit_price_tl)
+            sto.computation_mode = "aggregated"
+            sto.notes = [*(sto.notes or []), note]
+            out.append(sto)
+        return out
 
     @staticmethod
     def _extract_compute_metrics(
@@ -1857,6 +2537,9 @@ SELECT _tot, _alloc FROM latest
 
         ratio_lookup = {(r.family, r.dc_code): r for r in self.list_ratios()}
         unit_lookup = self._build_unit_lookup()
+        # Operator-defined compute/storage coupling (Administration -> Platform ->
+        # Compute / Storage). Every family defaults to 'auto' = built-in behaviour.
+        coupling_lookup = self._build_coupling_lookup()
 
         range_inputs: dict | None = None
         needs_range = any(
@@ -1883,35 +2566,103 @@ SELECT _tot, _alloc FROM latest
                 or ResourceRatio(family=fam)
             )
 
+            coupling_mode = self.resolve_storage_coupling(fam, dc_code, coupling_lookup)
+
             host_rows: list[dict] | None = None
             host_status = "unavailable"
             storage_pools: list[dict] = []
             host_based_ok = False
 
             if fam in _HOST_BASED_FAMILIES:
+                host_clusters = (
+                    None if fam in _CLUSTERLESS_HOST_ROW_FAMILIES else selected_clusters
+                )
+                # Replication Classic/HC borrows virt host rows for SoT parity.
+                host_fetch_family = _REPLICATION_HOST_SOURCE_FAMILY.get(fam, fam)
                 if dc_code == "*" and global_host_dcs:
                     host_rows, host_status, storage_pools = self._fetch_host_rows_multi(
-                        global_host_dcs, fam, selected_clusters,
+                        global_host_dcs, host_fetch_family, host_clusters,
                     )
                 elif dc_code and dc_code != "*":
                     host_rows, host_status, storage_pools = self._fetch_host_rows(
-                        dc_code, fam, selected_clusters,
+                        dc_code, host_fetch_family, host_clusters,
                     )
+
+            # Power's storage panel stays on the aggregate branch (see
+            # _HOST_COMPUTE_ONLY_FAMILIES): handing it to the host path would
+            # overwrite its totals with the frames' zeros and skip the range.
+            storage_host_based = host_based_ok
+            deferred_storage: list[PanelResult] = []
 
             if host_rows:
                 host_based_ok = True
+                host_group = group
+                if fam in _HOST_COMPUTE_ONLY_FAMILIES:
+                    host_group = [p for p in group if p.resource_kind != "storage"]
+                    deferred_storage = [p for p in group if p.resource_kind == "storage"]
+                storage_host_based = host_based_ok and not deferred_storage
+                host_math_family = _REPLICATION_HOST_SOURCE_FAMILY.get(fam, fam)
                 new_group = self._apply_host_based_constraints(
-                    group,
+                    host_group,
                     ratio,
                     host_rows,
                     unit_lookup,
                     dc_code=dc_code,
-                    family=fam,
+                    family=host_math_family,
                     clusters=selected_clusters,
                     effective_ghz_per_unit=effective_ghz,
                     storage_pools=storage_pools,
-                    range_inputs=range_inputs if fam == "virt_classic" else None,
+                    range_inputs=range_inputs if host_math_family == "virt_classic" else None,
+                    host_cpu_unit=_FAMILY_HOST_CPU_UNIT.get(host_math_family, "GHz"),
+                    # Cluster rules live below the family, so the override has to
+                    # be resolved per host rather than once per family.
+                    storage_in_triple_override=self.build_host_coupling_resolver(
+                        fam, dc_code, coupling_lookup,
+                    ),
                 )
+                if fam in _REPLICATION_HOST_SOURCE_FAMILY:
+                    parity_note = (
+                        f"replication compute from {host_math_family} host SoT (parity)"
+                    )
+                    for p in new_group:
+                        if p.resource_kind in ("cpu", "ram") and parity_note not in (p.notes or []):
+                            p.notes = [*(p.notes or []), parity_note]
+                if fam in ("virt_classic", "virt_hyperconverged") and dc_code and dc_code != "*":
+                    new_group = self._subtract_replica_allocation_from_virt(
+                        new_group, dc_code, fam,
+                    )
+                if fam in _REPLICATION_HOST_SOURCE_FAMILY and deferred_storage:
+                    storage_dcs = list(global_host_dcs) if global_host_dcs else (
+                        [dc_code] if dc_code and dc_code != "*" else []
+                    )
+                    if storage_dcs:
+                        deferred_storage = self._apply_replication_storage_multi(
+                            deferred_storage, fam, storage_dcs, unit_lookup,
+                        )
+                    elif refresh_from_totals:
+                        deferred_storage = self._refresh_group_sellable_from_totals(
+                            deferred_storage,
+                            computation_mode=deferred_storage[0].computation_mode
+                            or "aggregated",
+                        )
+                elif refresh_from_totals and deferred_storage:
+                    # Global inventory hands us pre-merged panels with
+                    # sellable_raw zeroed (_merge_panel_results); the aggregate
+                    # branch rebuilds it from the summed totals and the deferred
+                    # storage panel needs the same treatment, or it caps from 0.
+                    deferred_storage = self._refresh_group_sellable_from_totals(
+                        deferred_storage,
+                        computation_mode=deferred_storage[0].computation_mode
+                        or "aggregated",
+                    )
+                for sto in deferred_storage:
+                    # Hand the panel back unbound; _apply_storage_range and
+                    # apply_storage_ratio_cap below give it the same treatment
+                    # the aggregate branch would have, now driven by the
+                    # host-based compute bottleneck.
+                    sto.sellable_constrained = float(sto.sellable_raw or 0.0)
+                    sto.ratio_bound = False
+                    new_group.append(sto)
             elif fam in _HOST_BASED_FAMILIES and dc_code == "*":
                 # Do NOT call compute_all_panels(dc_code="*", family=fam) here:
                 # that re-enters this method and recurses forever when
@@ -1926,20 +2677,36 @@ SELECT _tot, _alloc FROM latest
                 refreshed = self._refresh_group_sellable_from_totals(
                     group, computation_mode="aggregated",
                 )
+                if fam in _REPLICATION_HOST_SOURCE_FAMILY and global_host_dcs:
+                    sto_panels = [p for p in refreshed if p.resource_kind == "storage"]
+                    other = [p for p in refreshed if p.resource_kind != "storage"]
+                    sto_panels = self._apply_replication_storage_multi(
+                        sto_panels, fam, global_host_dcs, unit_lookup,
+                    )
+                    refreshed = other + sto_panels
                 new_group = constrain_by_ratio(
                     refreshed, ratio, decouple_resource_kinds=None,
                 )
             elif fam in _HOST_BASED_FAMILIES:
+                fallback_family = _REPLICATION_HOST_SOURCE_FAMILY.get(fam, fam)
                 new_group = self._apply_cluster_fallback_dual(
                     group,
                     ratio,
                     dc_code,
-                    fam,
+                    fallback_family,
                     selected_clusters,
                     host_status=host_status,
                     effective_ghz_per_unit=effective_ghz,
                     decouple_resource_kinds=None,
                 )
+                if fam in _REPLICATION_HOST_SOURCE_FAMILY:
+                    parity_note = (
+                        f"replication compute from {fallback_family} "
+                        f"cluster_fallback (parity)"
+                    )
+                    for p in new_group:
+                        if p.resource_kind in ("cpu", "ram") and parity_note not in (p.notes or []):
+                            p.notes = [*(p.notes or []), parity_note]
             else:
                 source_group = (
                     self._refresh_group_sellable_from_totals(
@@ -1949,24 +2716,88 @@ SELECT _tot, _alloc FROM latest
                     if refresh_from_totals
                     else group
                 )
-                new_group = constrain_by_ratio(
-                    source_group, ratio, decouple_resource_kinds=None,
+                # Dedicated storage (NetBackup / Veeam DS / Zerto) or operator
+                # 'separate': do not zero disk via compute ratio up-front.
+                # Classic/HC replication stays in _SKIP… for auto; 'merged' still
+                # applies apply_storage_ratio_cap after this branch.
+                skip_storage_in_ratio = (
+                    coupling_mode == "separate"
+                    or (
+                        fam in _SKIP_STORAGE_RATIO_CAP_FAMILIES
+                        and coupling_mode != "merged"
+                    )
                 )
+                if skip_storage_in_ratio:
+                    compute_only = [
+                        p for p in source_group
+                        if (p.resource_kind or "").lower() != "storage"
+                    ]
+                    storage_only = [
+                        p for p in source_group
+                        if (p.resource_kind or "").lower() == "storage"
+                    ]
+                    new_group = (
+                        constrain_by_ratio(compute_only, ratio, decouple_resource_kinds=None)
+                        if compute_only
+                        else []
+                    )
+                    for sto in storage_only:
+                        sto.sellable_constrained = float(sto.sellable_raw or 0.0)
+                        sto.ratio_bound = False
+                        new_group.append(sto)
+                else:
+                    new_group = constrain_by_ratio(
+                        source_group, ratio, decouple_resource_kinds=None,
+                    )
 
-            if fam in _STORAGE_RANGE_FAMILIES and range_inputs and not host_based_ok:
+            if fam in _STORAGE_RANGE_FAMILIES and range_inputs and not storage_host_based:
                 self._apply_storage_range(new_group, fam, range_inputs, unit_lookup)
             elif (
                 fam in _STORAGE_RANGE_FAMILIES
                 and needs_range
                 and range_inputs is None
-                and not host_based_ok
+                and not storage_host_based
             ):
                 sto_p = next((p for p in new_group if p.resource_kind == "storage"), None)
                 if sto_p is not None:
                     sto_p.notes = [*sto_p.notes, "storage range skipped: datalake inputs unavailable"]
 
-            if not host_based_ok:
+            # Only the family mode drives the family-wide storage cap. A cluster
+            # rule narrows the per-host min() inside the host loop above; letting
+            # it also flip this cap would apply one cluster's decision to the
+            # whole family's storage panel.
+            cap_storage = not storage_host_based and fam not in _SKIP_STORAGE_RATIO_CAP_FAMILIES
+            if coupling_mode == "separate":
+                # Storage is sized from its own pool — the compute bottleneck
+                # must not cap it.
+                cap_storage = False
+            elif coupling_mode == "merged":
+                # Forced merge: cap storage by the compute bottleneck even on the
+                # host-based path, where the built-in rule leaves it uncapped.
+                cap_storage = True
+            if cap_storage:
                 new_group = apply_storage_ratio_cap(new_group, ratio)
+                # Mirror Alloc/Max/Ort package counts onto deferred storage so
+                # inventory triad tracks stay ratio-consistent with compute.
+                if coupling_mode == "merged" and fam in _HOST_COMPUTE_ONLY_FAMILIES:
+                    new_group = apply_storage_dual_track_ratio_caps(new_group, ratio)
+            if coupling_mode != "auto":
+                label = "merged with compute" if coupling_mode == "merged" else "separate from compute"
+                for p in new_group:
+                    if p.resource_kind == "storage":
+                        p.notes = [*p.notes, f"storage coupling: {label} (operator setting)"]
+            cluster_overrides = sorted(
+                key[3]
+                for key in coupling_lookup
+                if key[0] == fam and key[1] == dc_code and key[2] == "cluster"
+            )
+            if cluster_overrides and host_based_ok:
+                for p in new_group:
+                    if p.resource_kind == "storage":
+                        p.notes = [
+                            *p.notes,
+                            "cluster coupling overrides: " + ", ".join(cluster_overrides),
+                        ]
             new_group = annotate_panel_constraint_metadata(new_group)
 
             for new in new_group:
@@ -2043,13 +2874,29 @@ SELECT _tot, _alloc FROM latest
         _set(app, rng["b_min"], rng["b_max"])
 
     def _apply_replication_alternate_ranges(self, results: list[PanelResult]) -> None:
-        """Replication as alternate claimant on host free (virt remains primary)."""
-        note = "Replication alternate pool: min=0, max=host free (competes with virt)"
+        """Replication CPU/RAM as alternate claimant on host free (virt remains primary).
+
+        Storage is NOT shared with virt — Veeam uses dedicated datastores; Zerto uses
+        site/VPG metrics. Only cpu/ram panels get primary-vs-alternate ranges.
+
+        Preserves host-based sellable_allocation / max_util / avg_util triad; only
+        sets IBM-style sellable_min/max. Does not force constrained=0 into inventory
+        Free (Free uses capacity headroom separately).
+        """
+        note = (
+            "Replication alternate pool (CPU/RAM only): min=0, max=host free "
+            "(competes with virt; storage is dedicated)"
+        )
         for panel in results:
             if panel.family not in _REPLICATION_ALTERNATE_FAMILIES:
                 continue
+            kind = (panel.resource_kind or "").lower()
+            if kind not in _REPLICATION_ALTERNATE_KINDS:
+                continue
             free = 0.0
-            if panel.sellable_raw is not None and float(panel.sellable_raw) > 0:
+            if panel.sellable_allocation is not None and float(panel.sellable_allocation) > 0:
+                free = max(float(panel.sellable_allocation), 0.0)
+            elif panel.sellable_raw is not None and float(panel.sellable_raw) > 0:
                 free = max(float(panel.sellable_raw), 0.0)
             elif panel.sellable_constrained is not None and float(panel.sellable_constrained) > 0:
                 free = max(float(panel.sellable_constrained), 0.0)
@@ -2059,12 +2906,85 @@ SELECT _tot, _alloc FROM latest
             panel.sellable_min = rng["alternate_min"]
             panel.sellable_max = rng["alternate_max"]
             panel.sellable_constrained = panel.sellable_min
-            panel.sellable_raw = panel.sellable_max
+            if panel.sellable_raw is None or float(panel.sellable_raw or 0) <= 0:
+                panel.sellable_raw = panel.sellable_max
+            if panel.sellable_allocation is None:
+                panel.sellable_allocation = panel.sellable_max
             panel.potential_tl_min = compute_potential_tl(panel.sellable_min, panel.unit_price_tl)
             panel.potential_tl_max = compute_potential_tl(panel.sellable_max, panel.unit_price_tl)
             panel.potential_tl = panel.potential_tl_min or 0.0
             if note not in (panel.notes or []):
                 panel.notes = [*(panel.notes or []), note]
+
+    def _subtract_replica_allocation_from_virt(
+        self,
+        group: list[PanelResult],
+        dc_code: str,
+        family: str,
+    ) -> list[PanelResult]:
+        """Reduce virt allocated by replica/Zerto VM allocation (ADR-0032 §40)."""
+        offset = self._fetch_replica_allocation_offset(dc_code, family)
+        if not offset:
+            return group
+        cpu_off = float(offset.get("cpu_vcpu") or 0.0)
+        ram_off = float(offset.get("ram_gb") or 0.0)
+        vm_count = int(offset.get("vm_count") or 0)
+        if cpu_off <= 0 and ram_off <= 0:
+            return group
+        note = (
+            f"replica/Zerto allocation excluded from virt sellable "
+            f"({vm_count} VMs; cpu={cpu_off:g} vCPU, ram={ram_off:g} GB)"
+        )
+        for p in group:
+            if p.resource_kind == "cpu" and cpu_off > 0:
+                before = float(p.allocated or 0.0)
+                p.allocated = max(before - cpu_off, 0.0)
+                delta = min(cpu_off, before)
+                if p.sellable_raw is not None:
+                    p.sellable_raw = float(p.sellable_raw) + delta
+                if p.sellable_allocation is not None:
+                    p.sellable_allocation = float(p.sellable_allocation) + delta
+                if p.sellable_constrained is not None:
+                    p.sellable_constrained = float(p.sellable_constrained) + delta
+                if note not in (p.notes or []):
+                    p.notes = [*(p.notes or []), note]
+            elif p.resource_kind == "ram" and ram_off > 0:
+                before = float(p.allocated or 0.0)
+                p.allocated = max(before - ram_off, 0.0)
+                delta = min(ram_off, before)
+                if p.sellable_raw is not None:
+                    p.sellable_raw = float(p.sellable_raw) + delta
+                if p.sellable_allocation is not None:
+                    p.sellable_allocation = float(p.sellable_allocation) + delta
+                if p.sellable_physical is not None:
+                    p.sellable_physical = float(p.sellable_physical) + delta
+                if p.sellable_constrained is not None:
+                    p.sellable_constrained = float(p.sellable_constrained) + delta
+                if note not in (p.notes or []):
+                    p.notes = [*(p.notes or []), note]
+        return group
+
+    def _fetch_replica_allocation_offset(
+        self, dc_code: str, family: str,
+    ) -> dict[str, float | int] | None:
+        """Fetch non-billable virt allocation totals from datacenter-api."""
+        if not self._dc_api_url or not dc_code or dc_code == "*":
+            return None
+        arch = "classic" if family == "virt_classic" else "hyperconverged"
+        url = (
+            f"{self._dc_api_url}/api/v1/datacenters/{dc_code}/compute/"
+            f"replica-allocation?architecture={arch}&preset=30d"
+        )
+        try:
+            resp = httpx.get(url, timeout=60.0)
+            resp.raise_for_status()
+            data = resp.json()
+            return data if isinstance(data, dict) else None
+        except Exception:
+            logger.warning(
+                "replica-allocation fetch failed dc=%s family=%s", dc_code, family,
+            )
+            return None
 
     def recompute_family_constraints(
         self,
@@ -2245,8 +3165,15 @@ SELECT _tot, _alloc FROM latest
         effective_ghz_per_unit: float = 1.0,
         storage_pools: list[dict] | None = None,
         range_inputs: dict | None = None,
+        host_cpu_unit: str = "GHz",
+        storage_in_triple_override: StorageInTripleOverride = None,
     ) -> "list[PanelResult]":
-        """Recompute CPU/RAM/Storage from per-host rows (triple min + dual tracks)."""
+        """Recompute CPU/RAM/Storage from per-host rows (triple min + dual tracks).
+
+        ``host_cpu_unit`` is the unit the rows' CPU capacity is actually in --
+        GHz for hypervisor hosts, ``Core`` for IBM Power frames -- and is what
+        the panel's display unit is converted *from*.
+        """
         _ = dc_code, clusters
         by_kind = {p.resource_kind: p for p in group}
         cpu_p = by_kind.get("cpu")
@@ -2255,7 +3182,7 @@ SELECT _tot, _alloc FROM latest
         if cpu_p is None or ram_p is None:
             return constrain_by_ratio(group, ratio)
 
-        cpu_conv = self._lookup_conversion(unit_lookup, "GHz", cpu_p.display_unit)
+        cpu_conv = self._lookup_conversion(unit_lookup, host_cpu_unit, cpu_p.display_unit)
         ram_conv = self._lookup_conversion(unit_lookup, "GB", ram_p.display_unit)
         sto_conv = self._lookup_conversion(unit_lookup, "GB", sto_p.display_unit) if sto_p else None
 
@@ -2351,6 +3278,7 @@ SELECT _tot, _alloc FROM latest
                 p.sellable_physical = None
                 p.sellable_effective = cpu_raw_sum
                 p.sellable_allocation = cpu_raw_sum
+                p.has_infra_source = True
                 p.gate_blocked = utilization_gate_blocked(
                     cpu_total, cpu_alloc,
                     max((float(h.get("cpu_used_pct") or 0.0) for h in host_units), default=0.0),
@@ -2364,6 +3292,7 @@ SELECT _tot, _alloc FROM latest
                 p.sellable_raw = ram_raw_phys_sum
                 p.sellable_physical = ram_raw_phys_sum
                 p.sellable_effective = ram_raw_peak_sum
+                p.has_infra_source = True
                 p.gate_blocked = utilization_gate_blocked(
                     ram_total, ram_alloc,
                     max((float(h.get("mem_used_pct") or 0.0) for h in host_units), default=0.0),
@@ -2374,6 +3303,7 @@ SELECT _tot, _alloc FROM latest
                 p.total = stor_total
                 p.allocated = stor_prov
                 p.sellable_raw = stor_raw_sum
+                p.has_infra_source = True
                 if family == "virt_hyperconverged":
                     p.notes = [*p.notes, note, "Nutanix cluster pool (deduped per cluster)"]
                 else:
@@ -2395,6 +3325,7 @@ SELECT _tot, _alloc FROM latest
             unit_price_tl=unit_price,
             ibm_storage_range=ibm_range,
             cluster_storage_raw_gb=cluster_storage_raw_gb,
+            storage_in_triple_override=storage_in_triple_override,
         )
 
     def _apply_cluster_fallback_dual(
@@ -2758,25 +3689,143 @@ SELECT _tot, _alloc FROM latest
         # card exactly.
         compute_metrics = None
         util_pct: float | None = None
-        if selected_clusters and panel.family in _FAMILY_COMPUTE_ENDPOINT:
+        raw: dict | None = None
+        kind_l = (panel.resource_kind or "").lower()
+
+        # Veeam replication storage: all VMware DS except NetBackup (+ Nutanix on HC/unified).
+        # Dedicated compute path only — never fall back to generic infra SUM.
+        skip_infra_fallback = False
+        if (
+            panel.family in (
+                "backup_veeam_replication",
+                "backup_veeam_replication_classic",
+                "backup_veeam_replication_hyperconverged",
+            )
+            and kind_l == "storage"
+            and bool(dc_code)
+            and dc_code != "*"
+        ):
+            skip_infra_fallback = True
+            include_ntnx = panel.family in _REPLICATION_HC_FAMILIES
+            # Unified family uses classic VMware DS pool (include_nutanix can 500 on some DCs).
+            if panel.family == "backup_veeam_replication":
+                include_ntnx = False
+            veeam_raw = self._fetch_veeam_datastore_storage(
+                dc_code, include_nutanix=include_ntnx
+            )
+            if veeam_raw is not None:
+                compute_metrics = self._extract_compute_metrics(veeam_raw, "storage")
+                if compute_metrics is not None:
+                    raw = veeam_raw
+                    has_infra = True
+                    util_pct = self._extract_utilization_pct(raw, "storage")
+                    notes.append(
+                        "via datacenter-api/compute/backup-veeam-storage "
+                        "(sellable: eligible VMware DS except NetBackup"
+                        + (", +Nutanix" if include_ntnx else "")
+                        + "; not limited to current Veeam repositories)"
+                    )
+            if compute_metrics is None:
+                has_infra = False
+                notes.append(
+                    "veeam storage: backup-veeam-storage unavailable; "
+                    "infra SUM fallback disabled"
+                )
+
+        # Zerto replication storage: VMware DS except Veeam+NetBackup (+ Nutanix on HC).
+        # NEVER fall back to raw_zerto_site_metrics history SUM (inflates to billions TL).
+        if (
+            compute_metrics is None
+            and panel.family in (
+                "backup_zerto_replication",
+                "backup_zerto_replication_classic",
+                "backup_zerto_replication_hyperconverged",
+            )
+            and kind_l == "storage"
+            and bool(dc_code)
+            and dc_code != "*"
+        ):
+            skip_infra_fallback = True
+            include_ntnx = panel.family in _REPLICATION_HC_FAMILIES
+            # Unified family: VMware DS except Veeam+NetBackup (include_nutanix can fail).
+            zerto_raw = self._fetch_zerto_datastore_storage(
+                dc_code, include_nutanix=include_ntnx
+            )
+            if zerto_raw is not None:
+                compute_metrics = self._extract_compute_metrics(zerto_raw, "storage")
+                if compute_metrics is not None:
+                    raw = zerto_raw
+                    has_infra = True
+                    util_pct = self._extract_utilization_pct(raw, "storage")
+                    notes.append(
+                        "via datacenter-api/compute/backup-zerto-storage "
+                        "(VMware DS except Veeam+NetBackup"
+                        + (", +Nutanix" if include_ntnx else "")
+                        + ")"
+                    )
+            if compute_metrics is None:
+                has_infra = False
+                notes.append(
+                    "zerto storage: backup-zerto-storage unavailable; "
+                    "raw_zerto_site_metrics fallback disabled"
+                )
+
+        # Also block known-bad Zerto site-metrics infra even when DC is global (*).
+        if (
+            kind_l == "storage"
+            and panel.family in (
+                "backup_zerto_replication",
+                "backup_zerto_replication_classic",
+                "backup_zerto_replication_hyperconverged",
+            )
+            and (src.source_table or "").strip().lower() == "raw_zerto_site_metrics"
+        ):
+            skip_infra_fallback = True
+            if compute_metrics is None:
+                has_infra = False
+                if not any("raw_zerto_site_metrics fallback disabled" in n for n in notes):
+                    notes.append(
+                        "zerto storage: raw_zerto_site_metrics fallback disabled"
+                    )
+
+        # Replication storage must NOT use classic host storage from backup-replication.
+        use_compute = (
+            panel.family in _FAMILY_COMPUTE_ENDPOINT
+            and bool(dc_code)
+            and dc_code != "*"
+            and compute_metrics is None
+            and not (
+                panel.family in _REPLICATION_ALTERNATE_FAMILIES
+                and kind_l == "storage"
+            )
+        )
+        clusters_for_compute = [c for c in (selected_clusters or []) if c]
+        allow_clusterless = panel.family in _CLUSTERLESS_COMPUTE_FAMILIES
+        if use_compute and (clusters_for_compute or allow_clusterless):
             # Reuse a per-family raw response when compute_all_panels pre-fetched it.
-            raw: dict | None = None
             if compute_response_cache is not None:
-                key = (dc_code, panel.family, tuple(c for c in selected_clusters if c))
+                key = (dc_code, panel.family, tuple(clusters_for_compute))
                 if key in compute_response_cache:
                     raw = compute_response_cache[key]
                 else:
-                    raw = self._fetch_raw_compute_response(dc_code, panel.family, list(selected_clusters))
+                    raw = self._fetch_raw_compute_response(
+                        dc_code, panel.family, clusters_for_compute or None,
+                    )
                     compute_response_cache[key] = raw
                 if raw is not None:
                     compute_metrics = self._extract_compute_metrics(raw, panel.resource_kind)
             if compute_metrics is None and raw is None:
-                compute_metrics = self._fetch_compute_metrics_for_clusters(
-                    dc_code=dc_code,
-                    family=panel.family,
-                    resource_kind=panel.resource_kind,
-                    clusters=selected_clusters,
-                )
+                if clusters_for_compute:
+                    compute_metrics = self._fetch_compute_metrics_for_clusters(
+                        dc_code=dc_code,
+                        family=panel.family,
+                        resource_kind=panel.resource_kind,
+                        clusters=clusters_for_compute,
+                    )
+                elif allow_clusterless:
+                    raw = self._fetch_raw_compute_response(dc_code, panel.family, None)
+                    if raw is not None:
+                        compute_metrics = self._extract_compute_metrics(raw, panel.resource_kind)
 
         if compute_metrics is not None:
             cap, used, source_unit = compute_metrics
@@ -2789,13 +3838,23 @@ SELECT _tot, _alloc FROM latest
                 panel_key=panel.panel_key, side="allocated", notes=notes,
             )
             has_infra = True
-            util_pct = self._extract_utilization_pct(raw, panel.resource_kind)
-            notes.append(
-                f"cluster-scoped via datacenter-api/compute/{_FAMILY_COMPUTE_ENDPOINT[panel.family]} "
-                f"({len(selected_clusters)} cluster)"
-            )
-        elif not has_infra:
-            notes.append("infra-source missing — configure in Settings")
+            if util_pct is None:
+                util_pct = self._extract_utilization_pct(raw, panel.resource_kind)
+            if not any("via datacenter-api/compute/" in n for n in notes):
+                scope_note = (
+                    f"{len(clusters_for_compute)} cluster"
+                    if clusters_for_compute
+                    else "DC-wide"
+                )
+                notes.append(
+                    f"via datacenter-api/compute/{_FAMILY_COMPUTE_ENDPOINT[panel.family]} "
+                    f"({scope_note})"
+                )
+        elif not has_infra or skip_infra_fallback:
+            if not has_infra and not any(
+                "fallback disabled" in n or "infra-source missing" in n for n in notes
+            ):
+                notes.append("infra-source missing — configure in Settings")
             total_disp = 0.0
             alloc_disp = 0.0
         else:
@@ -3202,9 +4261,15 @@ SELECT _tot, _alloc FROM latest
         selected_clusters: list[str] | None = None,
         family: str | None = None,
         force_recompute: bool = False,
+        infra_dc_codes: list[str] | None = None,
     ) -> list[PanelResult]:
         fam_key = self._snapshot_family_key(family)
         clusters_csv = self._clusters_csv(selected_clusters)
+        # Multi-DC host path (global inventory HOST_DUAL) must not poison the
+        # plain dc='*' family cache that sellable-potential UI reads.
+        host_multi_dc = bool(
+            infra_dc_codes and any(c and c != "*" for c in infra_dc_codes)
+        )
 
         # 1. Tier-1 Redis result cache lookup.
         cache_key = self._result_cache_key(dc_code, selected_clusters, family)
@@ -3215,13 +4280,13 @@ SELECT _tot, _alloc FROM latest
                 fam_key,
                 clusters_csv,
             )
-        else:
+        elif not host_multi_dc:
             cached = self._result_cache_get(cache_key)
             if cached is not None:
                 return cached
 
         # 2. Tier-2 durable webui-db snapshot (repopulate Redis on hit).
-        if not force_recompute:
+        if not force_recompute and not host_multi_dc:
             db_cached = self._snapshot_db_get(dc_code or "*", fam_key, clusters_csv)
             if db_cached is not None:
                 self._result_cache_set(cache_key, db_cached)
@@ -3232,8 +4297,9 @@ SELECT _tot, _alloc FROM latest
         if family:
             defs = [d for d in defs if d.family == family]
         if not defs:
-            self._result_cache_set(cache_key, [])
-            self._snapshot_db_set(dc_code or "*", fam_key, clusters_csv, [])
+            if not host_multi_dc:
+                self._result_cache_set(cache_key, [])
+                self._snapshot_db_set(dc_code or "*", fam_key, clusters_csv, [])
             return []
 
         # 4. Bulk-load WebUI metadata in 3 queries instead of N×3 round-trips.
@@ -3275,10 +4341,12 @@ SELECT _tot, _alloc FROM latest
             results,
             dc_code or "*",
             selected_clusters=selected_clusters,
+            infra_dc_codes=infra_dc_codes,
         )
 
-        self._result_cache_set(cache_key, constrained)
-        self._snapshot_db_set(dc_code or "*", fam_key, clusters_csv, constrained)
+        if not host_multi_dc:
+            self._result_cache_set(cache_key, constrained)
+            self._snapshot_db_set(dc_code or "*", fam_key, clusters_csv, constrained)
         if family:
             total_tl = sum(r.potential_tl for r in constrained)
             logger.info(

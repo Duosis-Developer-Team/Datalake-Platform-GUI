@@ -19,9 +19,15 @@ from __future__ import annotations
 
 import math
 from dataclasses import replace
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .models import PanelResult, ResourceRatio, UnitConversion
+
+#: Operator override for a host's ``storage_in_triple`` decision. ``True`` merges
+#: the host's storage into its compute min(), ``False`` pulls it out, ``None``
+#: defers to the built-in per-host rule. A callable is resolved per host, which is
+#: how a cluster-scoped rule reaches only the hosts of that cluster.
+StorageInTripleOverride = bool | Callable[[dict], "bool | None"] | None
 
 
 def convert_unit(value: float | int | None, conv: UnitConversion | None) -> float:
@@ -250,6 +256,100 @@ def apply_storage_ratio_cap(
                 constraint_reason=constraint_reason,
                 bottleneck_kind=bottleneck_kind if capped else p.bottleneck_kind,
                 bottleneck_units=n_eff if capped else p.bottleneck_units,
+            )
+        )
+    return out
+
+
+def _package_units_from_track(
+    cpu_qty: float | None,
+    ram_qty: float | None,
+    ratio: ResourceRatio,
+) -> float | None:
+    """min(CPU packages, RAM packages) for one sellable track; None if no track qty."""
+    candidates: list[float] = []
+    if cpu_qty is not None and ratio.cpu_per_unit > 0:
+        candidates.append(max(float(cpu_qty), 0.0) / ratio.cpu_per_unit)
+    if ram_qty is not None and ratio.ram_gb_per_unit > 0:
+        candidates.append(max(float(ram_qty), 0.0) / ratio.ram_gb_per_unit)
+    if not candidates:
+        return None
+    return max(min(candidates), 0.0)
+
+
+def apply_storage_dual_track_ratio_caps(
+    panels: Iterable[PanelResult],
+    ratio: ResourceRatio,
+) -> list[PanelResult]:
+    """Project storage Alloc/Max/Ort tracks from compute dual-track package counts.
+
+    ``apply_storage_ratio_cap`` only uses ``sellable_constrained`` (typically the
+    Alloc track). Inventory shows three tracks on CPU/RAM; storage must mirror
+    each track × ``storage_gb_per_unit`` (capped by pool raw), or Ort/Max look
+    wrongly zero / flat while compute still has headroom on those tracks.
+    """
+    panel_list = list(panels)
+    by_kind = _split_by_kind(panel_list)
+    cpu_p = by_kind.get("cpu")
+    ram_p = by_kind.get("ram")
+    sto_p = by_kind.get("storage")
+    if sto_p is None or ratio.storage_gb_per_unit <= 0:
+        return panel_list
+    if cpu_p is None and ram_p is None:
+        return panel_list
+
+    raw = max(float(sto_p.sellable_raw or 0.0), 0.0)
+    n_alloc = _package_units_from_track(
+        cpu_p.sellable_allocation if cpu_p else None,
+        ram_p.sellable_allocation if ram_p else None,
+        ratio,
+    )
+    n_max = _package_units_from_track(
+        cpu_p.sellable_max_util if cpu_p else None,
+        ram_p.sellable_max_util if ram_p else None,
+        ratio,
+    )
+    n_avg = _package_units_from_track(
+        cpu_p.sellable_avg_util if cpu_p else None,
+        ram_p.sellable_avg_util if ram_p else None,
+        ratio,
+    )
+    # No dual-track qtys on compute → leave storage as ratio-cap left it.
+    if n_alloc is None and n_max is None and n_avg is None:
+        return panel_list
+
+    def _cap(n: float | None) -> float | None:
+        if n is None:
+            return None
+        return min(raw, n * ratio.storage_gb_per_unit)
+
+    sto_alloc = _cap(n_alloc)
+    sto_max = _cap(n_max)
+    sto_avg = _cap(n_avg)
+    # Primary constrained stays Alloc when present, else previous constrained.
+    if sto_alloc is not None:
+        new_constrained = sto_alloc
+    else:
+        new_constrained = min(float(sto_p.sellable_constrained or 0.0), raw)
+
+    out: list[PanelResult] = []
+    for p in panel_list:
+        if p.resource_kind != "storage":
+            out.append(p)
+            continue
+        out.append(
+            replace(
+                p,
+                sellable_constrained=new_constrained,
+                sellable_allocation=sto_alloc,
+                sellable_max_util=sto_max,
+                sellable_avg_util=sto_avg,
+                ratio_bound=True,
+                constraint_reason=(
+                    "ratio_bound"
+                    if p.constraint_reason in ("none", "", "compute_bottleneck")
+                    else p.constraint_reason
+                ),
             )
         )
     return out
@@ -538,14 +638,29 @@ def constrain_by_ratio_per_host_triple_dual(
     unit_price_tl: float = 0.0,
     ibm_storage_range: tuple[float, float] | None = None,
     cluster_storage_raw_gb: float | None = None,
+    storage_in_triple_override: StorageInTripleOverride = None,
 ) -> list[PanelResult]:
-    """Host-based triple min(CPU, RAM, Storage) with dual CPU/RAM tracks."""
+    """Host-based triple min(CPU, RAM, Storage) with dual CPU/RAM tracks.
+
+    ``storage_in_triple_override`` forces the operator's compute/storage
+    coupling: True keeps every host's storage inside the min() (merged),
+    False pulls it out (separate pool). None keeps the built-in per-host rule.
+
+    Pass a callable to decide per host — a cluster-scoped rule returns True/False
+    for hosts of that cluster and None for the rest, so untouched clusters keep
+    the built-in behaviour instead of inheriting a neighbour's override.
+    """
     from .host_sellable import (
         HostSellableResult,
         aggregate_family_storage_range,
         compute_host_sellable_units,
         host_storage_in_triple,
     )
+
+    def _override_for(host: dict) -> bool | None:
+        if callable(storage_in_triple_override):
+            return storage_in_triple_override(host)
+        return storage_in_triple_override
 
     panel_list = list(panels)
     if not hosts:
@@ -568,6 +683,7 @@ def constrain_by_ratio_per_host_triple_dual(
         n_sum = 0.0
         results: list[HostSellableResult] = []
         for h in hosts:
+            override = _override_for(h)
             result = compute_host_sellable_units(
                 h,
                 ratio,
@@ -579,8 +695,9 @@ def constrain_by_ratio_per_host_triple_dual(
                 effective_ghz_per_unit=effective_ghz_per_unit,
                 storage_include_shared=storage_shared,
                 storage_in_triple=(
-                    cluster_storage_raw_gb is None
-                    and host_storage_in_triple(h)
+                    override
+                    if override is not None
+                    else (cluster_storage_raw_gb is None and host_storage_in_triple(h))
                 ),
                 unit_price_tl=unit_price_tl,
             )
@@ -992,5 +1109,12 @@ def dedupe_shared_pool_tl(
     lo_b: float,
     hi_b: float,
 ) -> tuple[float, float]:
-    """IBM-style TL band merge for two panels claiming one shared pool."""
-    return float(lo_a) + float(lo_b), max(float(hi_a), float(hi_b))
+    """IBM-style TL band merge for two panels claiming one shared pool.
+
+    ``lo = a_lo + b_lo``. Combined ``hi`` is at least ``max(a_hi, b_hi)`` and
+    also at least ``lo`` — when both claimants can realize their mins at once,
+    the merged max must not fall below that sum (avoids min > max bands).
+    """
+    lo = float(lo_a) + float(lo_b)
+    hi = max(float(hi_a), float(hi_b), lo)
+    return lo, hi

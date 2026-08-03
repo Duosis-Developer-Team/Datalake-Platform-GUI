@@ -4,6 +4,7 @@ from __future__ import annotations
 from shared.sellable.host_sellable import (
     aggregate_family_storage_range,
     compute_host_sellable_units,
+    host_raw_headroom,
     host_storage_free_gb,
     host_storage_in_triple,
 )
@@ -184,3 +185,33 @@ def test_km_shared_storage_host_cpu_ram_units_without_storage_triple():
         storage_in_triple=False,
     )
     assert decoupled.n_units_min > 0.0
+
+
+def test_host_raw_headroom_phantom_vm_count_blocks_alloc_track():
+    """VMs present but alloc==0 is unknown inventory, not idle headroom."""
+    host = {
+        "vm_count": 51,
+        "cpu_cap_ghz": 100.0,
+        "cpu_alloc_ghz": 0.0,
+        "cpu_used_pct": 10.0,
+        "mem_cap_gb": 512.0,
+        "mem_alloc_gb": 0.0,
+        "mem_used_pct": 20.0,
+    }
+    assert host_raw_headroom(host, resource="cpu", threshold_pct=80.0) == 0.0
+    assert host_raw_headroom(host, resource="ram", threshold_pct=80.0) == 0.0
+
+
+def test_host_raw_headroom_empty_host_still_has_alloc_headroom():
+    """Truly empty host (no VMs, alloc 0) keeps gated headroom."""
+    host = {
+        "vm_count": 0,
+        "cpu_cap_ghz": 100.0,
+        "cpu_alloc_ghz": 0.0,
+        "cpu_used_pct": 5.0,
+        "mem_cap_gb": 512.0,
+        "mem_alloc_gb": 0.0,
+        "mem_used_pct": 5.0,
+    }
+    assert host_raw_headroom(host, resource="cpu", threshold_pct=80.0) == 80.0
+    assert host_raw_headroom(host, resource="ram", threshold_pct=80.0) == 409.6

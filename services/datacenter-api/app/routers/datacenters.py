@@ -347,16 +347,77 @@ def backup_netbackup_compute(
     return db.get_backup_netbackup_compute(dc_code, tf.to_dict())
 
 
+@router.get("/datacenters/{dc_code}/compute/replica-allocation", response_model=dict[str, Any])
+def replica_allocation_offset(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    architecture: Optional[str] = Query(
+        "classic",
+        description="classic (VMware KM) or hyperconverged (Nutanix SoT)",
+    ),
+):
+    """Non-billable virt allocation (replica/Zerto) to subtract from virt sellable."""
+    return db.get_replica_allocation_offset(
+        dc_code, tf.to_dict(), architecture=architecture or "classic"
+    )
+
+
 @router.get("/datacenters/{dc_code}/compute/backup-replication", response_model=dict[str, Any])
 def backup_replication_compute(
     dc_code: str,
     tf: TimeFilter = Depends(),
     db: DatabaseService = Depends(get_db),
-    clusters: Optional[str] = Query(None, description="Comma-separated classic cluster names; empty = all"),
+    clusters: Optional[str] = Query(None, description="Comma-separated cluster names; empty = all"),
+    architecture: Optional[str] = Query(
+        "classic",
+        description="classic (default) or hyperconverged host pool for replication CPU/RAM",
+    ),
 ):
-    """Veeam/Zerto alternate sellable capacity from the classic host pool."""
+    """Veeam/Zerto alternate sellable CPU/RAM from classic or HC host pool.
+
+    Storage is not included (dedicated Veeam/Zerto-eligible datastore pools).
+    """
     selected = [c.strip() for c in clusters.split(",") if c.strip()] if clusters else None
-    return db.get_backup_replication_compute(dc_code, selected, tf.to_dict())
+    return db.get_backup_replication_compute(
+        dc_code, selected, tf.to_dict(), architecture=architecture or "classic"
+    )
+
+
+@router.get("/datacenters/{dc_code}/compute/backup-veeam-storage", response_model=dict[str, Any])
+def backup_veeam_storage_compute(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    include_nutanix: bool = Query(
+        False,
+        description="When true, add Nutanix disk capacity for HC Veeam path",
+    ),
+):
+    """Veeam replication **sellable** storage: eligible VMware DS except NetBackup.
+
+    Sellable pool is broader than current Veeam repositories (demand can open
+    new capacity from remaining eligible datastores). CRM Sold stays on inventory.
+    """
+    return db.get_veeam_replication_datastore_compute(
+        dc_code, tf.to_dict(), include_nutanix=include_nutanix
+    )
+
+
+@router.get("/datacenters/{dc_code}/compute/backup-zerto-storage", response_model=dict[str, Any])
+def backup_zerto_storage_compute(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+    include_nutanix: bool = Query(
+        False,
+        description="When true, add Nutanix disk capacity for HC Zerto path",
+    ),
+):
+    """Zerto replication storage: VMware datastores except Veeam and NetBackup."""
+    return db.get_zerto_replication_datastore_compute(
+        dc_code, tf.to_dict(), include_nutanix=include_nutanix
+    )
 
 
 @router.get("/datacenters/{dc_code}/compute/backup-nutanix", response_model=dict[str, Any])
@@ -393,6 +454,21 @@ def hyperconv_compute_hosts(
     """Per-host CPU/RAM/storage capacity, usage and sales allocation for Hyperconverged (Nutanix) clusters."""
     selected = [c.strip() for c in clusters.split(",") if c.strip()] if clusters else None
     return db.get_hyperconv_host_rows(dc_code, selected, tf.to_dict())
+
+
+@router.get("/datacenters/{dc_code}/compute/power/hosts", response_model=dict[str, Any])
+def power_compute_hosts(
+    dc_code: str,
+    tf: TimeFilter = Depends(),
+    db: DatabaseService = Depends(get_db),
+):
+    """Per-frame CPU/RAM capacity, usage and LPAR allocation for IBM Power.
+
+    The frame is the host. CPU is reported in cores; storage is zero because the
+    arrays behind these frames are shared with the classic estate and free space
+    is not attributable per frame. No cluster filter: Power frames have none.
+    """
+    return db.get_power_host_rows(dc_code, None, tf.to_dict())
 
 
 @router.get("/datacenters/{dc_code}/racks", response_model=dict[str, Any])

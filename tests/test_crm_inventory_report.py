@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from src.components.crm_inventory_report import (
     INVENTORY_REPORT_SCHEMA_VERSION,
+    _header_money_badges,
     build_report_body,
     build_report_table,
     columns_for_family,
@@ -41,12 +42,14 @@ def _sample_row(**kwargs):
 
 
 def test_columns_for_family_profiles():
-    # Every profile carries a trailing "Birim Fiyat" (unit price) column; dual_track
-    # additionally carries a "Sellable (Ort.)" average column.
-    assert len(columns_for_family("standard")) == 7
-    assert len(columns_for_family("dual_track")) == 9
-    assert len(columns_for_family("allocation_only")) == 7
-    assert len(columns_for_family("virt_km", hide_used=True)) == 6
+    # Every profile carries Unsold + trailing "Birim Fiyat"; dual_track also
+    # carries Sellable Alloc/Max/Ort.
+    assert len(columns_for_family("standard")) == 8
+    assert len(columns_for_family("dual_track")) == 10
+    assert len(columns_for_family("allocation_only")) == 8
+    assert len(columns_for_family("virt_km", hide_used=True)) == 7
+    assert "unsold_fmt" in [c["id"] for c in columns_for_family("standard")]
+    assert "unsold_fmt" in [c["id"] for c in columns_for_family("dual_track")]
 
 
 def test_dual_track_has_sellable_average_column():
@@ -135,14 +138,20 @@ def test_prepare_service_row_marks_suspect_data_quality():
     assert row["data_quality"] == "suspect"
 
 
-def test_prepare_service_row_standard_free_shows_sellable_tl():
+def test_prepare_service_row_standard_free_and_unsold_columns():
     row = prepare_service_row(_sample_row(
         sellable_profile="standard",
         sellable_alloc_qty=None,
         sellable_max_qty=None,
+        free_qty=60.0,
+        free_tl=90000.0,
+        unsold_qty=70.0,
+        unsold_tl=105000.0,
+        unit_price_tl=1500.0,
     ))
-    assert "20 vCPU" in row["free_fmt"]
-    assert "30,000 TL" in row["free_fmt"]
+    assert "60 vCPU" in row["free_fmt"]
+    assert "90,000 TL" in row["free_fmt"]
+    assert "70 vCPU" in row["unsold_fmt"]
     assert row["sellable_alloc_fmt"] == "—\n—"
 
 
@@ -177,6 +186,7 @@ def test_prepare_service_row_netbackup_used_qty_tl_only():
         total=44069.0,
         used_qty=411.0,
         used_tl=94530.0,
+        pool_used_qty=411.0,
         pre_dedup_qty=411.0,
         post_dedup_qty=5.0,
         post_dedup_tl=1150.0,
@@ -186,27 +196,27 @@ def test_prepare_service_row_netbackup_used_qty_tl_only():
         dedup_margin_tl=93380.0,
         free_qty=42115.0,
         free_tl=58961.0,
+        unsold_qty=44011.0,
         inventory_free_mode="physical",
+        used_compare_note="Pool used: 411.0 TB · jobs PostDedup: 5.0 TB",
     ))
     assert "58 TB" in row["crm_sold_fmt"]
     assert "23,246 TL" in row["crm_sold_fmt"]
-    assert "44,069 TB" in row["total_fmt"]
-    assert "23,246 TL" not in row["total_fmt"]
-    assert row["used_fmt"] == "411 TB\n94,530 TL"
+    assert row["total_fmt"] == "44,069 TB"
+    assert "Pool used" not in row["total_fmt"]
+    assert "411 TB" in row["used_fmt"]
+    assert "Pool used" in row["used_fmt"]
     assert row["pre_dedup_fmt"] == "411 TB\n94,530 TL"
-    assert row["post_dedup_fmt"] == "5 TB\n1,150 TL"
+    assert "5" in row["post_dedup_fmt"] and "1,150 TL" in row["post_dedup_fmt"]
     assert "98.8%" in row["dedup_savings_fmt"]
     assert "93,380 TL" in row["dedup_savings_fmt"]
-    assert "Pre:" not in row["used_fmt"]
-    assert "Saved:" not in row["used_fmt"]
-    assert "Dedup:" not in row["used_fmt"]
     assert "42,115 TB" in row["free_fmt"]
+    assert "44,011 TB" in row["unsold_fmt"]
     # Free valued at the CRM-sold implied price (23,246 TL / 58 TB), not the old
     # mis-scaled service free_tl (58,961 TL).
     expected_free_tl = f"{42115.0 * (23246.0 / 58.0):,.0f} TL"
     assert expected_free_tl in row["free_fmt"]
     assert "58,961 TL" not in row["free_fmt"]
-    assert "44,069 TB" not in row["used_fmt"]
     assert "58 TB" not in row["total_fmt"]
 
 
@@ -218,10 +228,12 @@ def test_columns_for_family_netbackup_includes_used():
         "display_unit",
         "crm_sold_fmt",
         "total_fmt",
+        "used_fmt",
         "pre_dedup_fmt",
         "post_dedup_fmt",
         "dedup_savings_fmt",
         "free_fmt",
+        "unsold_fmt",
         "unit_price_fmt",
     ]
 
@@ -466,9 +478,51 @@ def test_unit_price_missing_shows_dash():
     assert row["unit_price_fmt"] == "—"
 
 
-def test_prepare_service_row_netbackup_shows_dedup_logical():
-    """NetBackup Total cell must expose the logical (pre-dedup) size and dedup factor so
-    the physical pool vs logical backup gap ('1.5 PB total but 5 PB stored') is visible."""
+def test_header_money_badges_crm_sold_and_sellable_interval():
+    badges = _header_money_badges(
+        [
+            _sample_row(
+                potential_tl_alloc=27000.0,
+                potential_tl_max=33000.0,
+                potential_tl_avg=45000.0,
+            ),
+            _sample_row(
+                panel_key="virt_classic_ram",
+                crm_sold_tl=5000.0,
+                potential_tl_alloc=3000.0,
+                potential_tl_max=4000.0,
+                potential_tl_avg=5000.0,
+            ),
+        ],
+        profile="dual_track",
+    )
+    labels = [getattr(b, "children", None) or str(b) for b in badges]
+    joined = " ".join(str(x) for x in labels)
+    assert "CRM Sold" in joined
+    assert "Sellable" in joined
+    assert "Sellable Alloc" not in joined
+    assert "Sellable Max" not in joined
+    assert "Sellable Ort." not in joined
+    # Σmin = 27000+3000=30000; Σmax = 45000+5000=50000
+    assert "30,000 TL" in joined
+    assert "50,000 TL" in joined
+
+
+def test_header_money_badges_hides_zero_sellable_tracks():
+    badges = _header_money_badges(
+        [_sample_row(potential_tl_alloc=0.0, potential_tl_max=None, potential_tl_avg=None,
+                     sellable_alloc_qty=0.0, sellable_max_qty=None, sellable_avg_qty=None)],
+        profile="dual_track",
+    )
+    labels = " ".join(str(getattr(b, "children", None) or b) for b in badges)
+    assert "CRM Sold" in labels
+    assert "Sellable Alloc" not in labels
+    assert "Sellable Max" not in labels
+    # Zero-only tracks → no Sellable interval chip
+    assert labels.count("Sellable") == 0 or "Sellable 0" not in labels
+
+def test_prepare_service_row_netbackup_total_is_capacity_only():
+    """NetBackup Total is pool usable qty only; Transfer holds PreDedup."""
     row = prepare_service_row(_sample_row(
         panel_key="backup_netbackup_storage",
         family="backup_netbackup",
@@ -476,15 +530,16 @@ def test_prepare_service_row_netbackup_shows_dedup_logical():
         sellable_profile="standard",
         total=1544.0,
         pre_dedup_qty=5024.0,
+        used_tl=1000.0,
         dedup_factor=3.2,
         dedup_savings_pct=69.3,
         free_qty=238.0,
         free_tl=338.0,
         inventory_free_mode="physical",
     ))
-    assert "1,544 TB" in row["total_fmt"]
-    assert "5,024 TB" in row["total_fmt"]
-    assert "3.2" in row["total_fmt"]
+    assert row["total_fmt"] == "1,544 TB"
+    assert "5,024 TB" in row["pre_dedup_fmt"]
+    assert "3.2" not in row["total_fmt"]
 
 
 def test_prepare_service_row_no_dedup_note_when_absent():

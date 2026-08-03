@@ -81,6 +81,13 @@ def _panel_defs_default(**overrides) -> dict[str, dict]:
             "inventory_visible": True,
             "inventory_merge_target": None,
         },
+        "backup_veeam_replication_classic_cpu": {
+            "panel_key": "backup_veeam_replication_classic_cpu",
+            "family": "backup_veeam_replication_classic",
+            "inventory_visible": True,
+            "inventory_merge_target": None,
+            "label": "Veeam Replication Classic — CPU",
+        },
         "backup_netbackup_storage": {
             "panel_key": "backup_netbackup_storage",
             "family": "backup_netbackup",
@@ -153,14 +160,23 @@ def _panel_defs_default(**overrides) -> dict[str, dict]:
 
 
 def _stub_netbackup_metrics(sellable: MagicMock) -> None:
+    zero_cat = {
+        "pre_dedup_bytes": 0.0,
+        "used_post_dedup_bytes": 0.0,
+        "dedup_savings_bytes": 0.0,
+        "dedup_savings_pct": 0.0,
+        "dedup_factor": 0.0,
+    }
     sellable.get_netbackup_inventory_metrics.return_value = {
         "total_bytes": 0.0,
+        "used_pool_bytes": 0.0,
         "used_post_dedup_bytes": 0.0,
         "pre_dedup_bytes": 0.0,
         "available_bytes": 0.0,
         "dedup_savings_bytes": 0.0,
         "dedup_savings_pct": 0.0,
         "dedup_factor": 0.0,
+        "by_category": {"image": dict(zero_cat), "application": dict(zero_cat)},
     }
 
 
@@ -379,7 +395,9 @@ def test_build_panel_row_includes_dual_track_fields(inventory_svc):
     assert cpu["inventory_hide_used"] is True
     assert cpu["used_qty"] is None
     assert cpu["used_tl"] is None
-    assert cpu["free_qty"] == 70.0
+    assert cpu["free_qty"] == 60.0  # infra empty: total 100 − allocated 40
+    assert cpu["unsold_qty"] == 70.0  # Total − CRM Sold (30)
+    assert cpu["inventory_free_mode"] == "infra"
     assert cpu["unit_price_tl"] == 1500.0
     assert cpu["sellable_alloc_qty"] == 18.0
     assert cpu["sellable_max_qty"] == 22.0
@@ -452,6 +470,9 @@ def _webui_rows(sql: str):
 def inventory_svc():
     sellable = MagicMock()
     sellable.is_available = True
+    sellable.list_ratios.return_value = []
+    sellable._build_coupling_lookup.return_value = {}
+    sellable.resolve_storage_coupling.return_value = "auto"
     sellable.compute_all_panels.return_value = [
         _panel(),
         _panel(
@@ -526,7 +547,8 @@ def test_compute_inventory_overview_merges_panels(inventory_svc):
     assert cpu["crm_sold_qty"] == 30.0
     assert cpu["used_qty"] is None
     assert cpu["sellable_qty"] == 20.0
-    assert cpu["free_qty"] == 70.0
+    assert cpu["free_qty"] == 60.0
+    assert cpu["unsold_qty"] == 70.0
     assert cpu["service_label"] == "Klasik Mimari — CPU"
     assert cpu["family_label"] == "Klasik Mimari"
     assert cpu["infra_binding"] == "bound"
@@ -638,7 +660,9 @@ def test_global_inventory_aggregates_per_dc_infra():
     assert cpu["total"] == 150.0
     assert cpu["used_qty"] is None
     assert cpu["sellable_qty"] == 60.0
-    assert cpu["free_qty"] == 150.0
+    assert cpu["free_qty"] == 90.0  # infra empty: 150 − (40+20) allocated
+    # Fixture CRM seed maps classic CPU SKUs, not Power HANA — unsold = total.
+    assert cpu["unsold_qty"] == 150.0
     assert cpu["potential_tl"] == 90000.0
     assert cpu["has_infra_source"] is True
     assert cpu["computation_mode"] == "aggregated"
@@ -722,6 +746,83 @@ def test_global_inventory_virt_family_not_summed_per_dc():
     assert "virt_classic" in star_family_calls
 
 
+def test_global_inventory_host_dual_passes_infra_dc_codes():
+    """HOST_DUAL family compute must receive infra_dc_codes so host_rows are fetched."""
+    sellable = MagicMock()
+    sellable.is_available = True
+    star_kwargs: list[dict] = []
+
+    def _compute(dc_code="*", **kwargs):
+        family = kwargs.get("family")
+        if dc_code == "*":
+            star_kwargs.append(dict(kwargs))
+            if family == "backup_veeam_replication_classic":
+                return [
+                    _panel(
+                        panel_key="backup_veeam_replication_classic_cpu",
+                        label="Veeam Classic CPU",
+                        family="backup_veeam_replication_classic",
+                        total=5326.0,
+                        allocated=100.0,
+                        sellable_constrained=50.0,
+                        has_infra_source=True,
+                        computation_mode="host_based",
+                    ),
+                ]
+            if family in ("virt_classic", "virt_hyperconverged"):
+                return [
+                    _panel(
+                        panel_key=f"{family}_cpu",
+                        label=f"{family} CPU",
+                        family=family,
+                        total=100.0,
+                        allocated=40.0,
+                        sellable_constrained=20.0,
+                        has_infra_source=True,
+                    ),
+                ]
+            return []
+        return []
+
+    sellable.compute_all_panels.side_effect = _compute
+    sellable.recompute_family_constraints.side_effect = _recompute_panels
+    sellable._count_unmapped_products.return_value = 0
+    sellable.compute_site_scoped_panels.return_value = []
+    _stub_netbackup_metrics(sellable)
+
+    sales = MagicMock()
+    sales._run_query.return_value = []
+
+    def _webui_rows_multi(sql: str):
+        if "FROM   gui_panel_infra_source" in sql and "DISTINCT dc_code" in sql:
+            return [{"dc_code": "DC13"}, {"dc_code": "DC14"}]
+        return _webui_rows(sql)
+
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.side_effect = _webui_rows_multi
+
+    config = MagicMock()
+    config.get_calc_dict.return_value = {"efficiency.under_pct": 80.0, "efficiency.over_pct": 110.0}
+
+    svc = InventoryOverviewService(
+        sellable=sellable,
+        sales=sales,
+        webui=webui,
+        config=config,
+        crm_redis=None,
+    )
+    payload = svc.compute_inventory_overview("*")
+    repl_calls = [
+        kw for kw in star_kwargs
+        if kw.get("family") == "backup_veeam_replication_classic"
+    ]
+    assert repl_calls, "expected HOST_DUAL compute for veeam classic"
+    assert repl_calls[0].get("infra_dc_codes") == ["DC13", "DC14"]
+    families = {f["family"] for f in payload.get("families") or []}
+    assert "replication" in families
+
+
 def test_value_tl_from_catalog_price():
     assert _value_tl_from_catalog_price(775.0, unit_price_tl=762.0, has_price=True) == 590550.0
     assert _value_tl_from_catalog_price(775.0, unit_price_tl=0.0, has_price=True) is None
@@ -737,12 +838,14 @@ def test_apply_netbackup_inventory_fields_physical_free_and_dedup():
         "used_qty": 5.0,
         "free_qty": 999.0,
         "crm_sold_qty": 10.0,
+        "total": 150.0,
     }
     tb = 1024.0 ** 4
     metrics = {
         "available_bytes": 100.0 * tb,
         "pre_dedup_bytes": 50.0 * tb,
         "used_post_dedup_bytes": 5.0 * tb,
+        "used_pool_bytes": 12.0 * tb,
         "dedup_savings_bytes": 45.0 * tb,
         "dedup_savings_pct": 90.0,
         "dedup_factor": 10.0,
@@ -760,7 +863,224 @@ def test_apply_netbackup_inventory_fields_physical_free_and_dedup():
     assert out["dedup_factor"] == 10.0
     assert out["inventory_free_mode"] == "physical"
     assert out["free_tl"] == 23000.0
+    assert out["unsold_qty"] == 140.0  # Total 150 − CRM Sold 10
+    assert out["unsold_tl"] == 32200.0
     assert out["efficiency_pct"] == 500.0
+    assert out["pool_used_qty"] == 12.0
+    assert "Pool used: 12.0 TB" in out["used_compare_note"]
+    assert "PostDedup: 5.0 TB" in out["used_compare_note"]
+
+
+def test_apply_netbackup_inventory_fields_splits_image_vs_application_jobs():
+    """Total/Free shared; Transfer/Post come from by_category slice."""
+    from app.services.inventory_overview_service import _apply_netbackup_inventory_fields
+
+    tb = 1024.0 ** 4
+    metrics = {
+        "available_bytes": 200.0 * tb,
+        "used_pool_bytes": 50.0 * tb,
+        "total_bytes": 250.0 * tb,
+        "pre_dedup_bytes": 100.0 * tb,
+        "used_post_dedup_bytes": 10.0 * tb,
+        "by_category": {
+            "image": {
+                "pre_dedup_bytes": 80.0 * tb,
+                "used_post_dedup_bytes": 8.0 * tb,
+                "dedup_savings_bytes": 72.0 * tb,
+                "dedup_savings_pct": 90.0,
+                "dedup_factor": 10.0,
+            },
+            "application": {
+                "pre_dedup_bytes": 20.0 * tb,
+                "used_post_dedup_bytes": 2.0 * tb,
+                "dedup_savings_bytes": 18.0 * tb,
+                "dedup_savings_pct": 90.0,
+                "dedup_factor": 10.0,
+            },
+        },
+    }
+    image = _apply_netbackup_inventory_fields(
+        {
+            "panel_key": "backup_netbackup_image",
+            "has_infra_source": True,
+            "has_price": True,
+            "unit_price_tl": 100.0,
+            "crm_sold_qty": 1.0,
+        },
+        metrics,
+    )
+    app = _apply_netbackup_inventory_fields(
+        {
+            "panel_key": "backup_netbackup_application",
+            "has_infra_source": True,
+            "has_price": True,
+            "unit_price_tl": 200.0,
+            "crm_sold_qty": 2.0,
+        },
+        metrics,
+    )
+    assert image["free_qty"] == app["free_qty"] == 200.0
+    assert image["pool_used_qty"] == app["pool_used_qty"] == 50.0
+    assert image["pre_dedup_qty"] == 80.0
+    assert app["pre_dedup_qty"] == 20.0
+    assert image["post_dedup_qty"] == 8.0
+    assert app["post_dedup_qty"] == 2.0
+    assert "image PostDedup" in image["used_compare_note"]
+    assert "app PostDedup" in app["used_compare_note"]
+    assert image["unsold_qty"] is None  # no total on row
+    assert app["unsold_qty"] is None
+
+
+def test_replication_free_uses_crm_sold_not_allocation():
+    """Replication Free = infra empty; Unsold = Total − CRM Sold; Alloc TL = qty × price."""
+    from app.services.inventory_overview_service import (
+        _assess_data_quality,
+        _sellable_track_fields,
+    )
+
+    panel = PanelResult(
+        panel_key="backup_veeam_replication_classic_cpu",
+        label="CPU",
+        family="backup_veeam_replication_classic",
+        resource_kind="cpu",
+        display_unit="vCPU",
+        total=8512.0,
+        allocated=19047.0,
+        threshold_pct=85.0,
+        sellable_raw=509.0,
+        sellable_constrained=0.0,
+        sellable_allocation=509.0,
+        sellable_max_util=100.0,
+        sellable_avg_util=200.0,
+        sellable_min=0.0,
+        sellable_max=509.0,
+        potential_tl_min=0.0,
+        potential_tl_max=19072.23,
+        potential_tl=0.0,
+        has_infra_source=True,
+        has_price=True,
+        unit_price_tl=37.47,
+    )
+    quality, reason = _assess_data_quality(panel, crm_sold=0.0)
+    assert quality == "suspect"
+    assert reason == "allocation_exceeds_total"
+
+    track = _sellable_track_fields(panel, has_infra=True)
+    assert track["sellable_alloc_qty"] == 509.0
+    assert track["potential_tl_alloc"] == pytest.approx(509.0 * 37.47)
+    # Max util TL must use triad max_qty, not alternate potential_tl_max (alloc×price).
+    assert track["sellable_max_qty"] == 100.0
+    assert track["potential_tl_max"] == pytest.approx(100.0 * 37.47)
+    assert track["potential_tl_avg"] == pytest.approx(200.0 * 37.47)
+    assert track["potential_tl_max"] != pytest.approx(panel.potential_tl_max)
+
+    from shared.sellable.models import ResourceRatio
+
+    sellable = MagicMock()
+    sellable.is_available = True
+    sellable.recompute_family_constraints.side_effect = lambda panels, **kw: panels
+    sellable._count_unmapped_products.return_value = 0
+    sellable.compute_site_scoped_panels.return_value = []
+    sellable._fetch_datacenter_codes.return_value = []
+    sellable.list_ratios.return_value = [
+        ResourceRatio(
+            family="backup_veeam_replication_classic",
+            cpu_per_unit=1.0,
+            ram_gb_per_unit=4.0,
+            storage_gb_per_unit=50.0,
+        )
+    ]
+    sellable.resolve_storage_coupling.return_value = "separate"
+    sellable._build_coupling_lookup.return_value = {}
+    _stub_netbackup_metrics(sellable)
+    sellable.compute_all_panels.return_value = [panel]
+
+    sales = MagicMock()
+    sales._run_query.return_value = []
+
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.side_effect = _webui_rows
+    webui.run_one.return_value = None
+
+    config = MagicMock()
+    config.get_calc_dict.return_value = {
+        "efficiency.under_pct": 80.0,
+        "efficiency.over_pct": 110.0,
+    }
+
+    svc = InventoryOverviewService(
+        sellable=sellable,
+        sales=sales,
+        webui=webui,
+        config=config,
+        crm_redis=None,
+    )
+    # Build row directly (avoid full overview merge)
+    row = svc._build_panel_row(
+        panel,
+        {"entitled_qty": 0.0, "entitled_amount_tl": 0.0, "product_names": []},
+        panel_defs=_panel_defs_default(),
+        service_pages={},
+        under_pct=80.0,
+        over_pct=110.0,
+        dc_code="*",
+        ratio_lookup={
+            ("backup_veeam_replication_classic", "*"): ResourceRatio(
+                family="backup_veeam_replication_classic",
+                cpu_per_unit=1.0,
+                ram_gb_per_unit=4.0,
+                storage_gb_per_unit=50.0,
+            )
+        },
+        coupling_lookup={},
+    )
+    assert row["free_qty"] == 0.0  # max(8512 − 19047, 0)
+    assert row["unsold_qty"] == 8512.0  # Total − CRM Sold 0
+    assert row["inventory_free_mode"] == "infra"
+    assert row["used_qty"] == 19047.0
+    assert row["used_is_allocation"] is True
+    assert row["potential_tl_alloc"] == pytest.approx(509.0 * 37.47)
+    assert row["potential_tl_max"] == pytest.approx(100.0 * 37.47)
+    assert row["data_quality"] == "suspect"
+    assert row["resource_ratio_fmt"] == "1 : 4 : 50"
+    assert row["storage_coupling_mode"] == "separate"
+    assert row["resource_ratio"] == {
+        "cpu_per_unit": 1.0,
+        "ram_gb_per_unit": 4.0,
+        "storage_gb_per_unit": 50.0,
+    }
+
+
+def test_replication_storage_sellable_triad_from_constrained():
+    """Replication storage without host tracks fills Alloc/Max/Ort from constrained."""
+    from app.services.inventory_overview_service import _sellable_track_fields
+
+    panel = PanelResult(
+        panel_key="backup_veeam_replication_classic_storage",
+        label="Storage",
+        family="backup_veeam_replication_classic",
+        resource_kind="storage",
+        display_unit="GB",
+        total=10000.0,
+        allocated=4000.0,
+        threshold_pct=85.0,
+        sellable_constrained=2500.0,
+        sellable_allocation=None,
+        sellable_max_util=None,
+        sellable_avg_util=None,
+        potential_tl=2500.0 * 10.0,
+        has_infra_source=True,
+        has_price=True,
+        unit_price_tl=10.0,
+    )
+    track = _sellable_track_fields(panel, has_infra=True)
+    assert track["sellable_alloc_qty"] == 2500.0
+    assert track["sellable_max_qty"] == 2500.0
+    assert track["sellable_avg_qty"] == 2500.0
+    assert track["potential_tl_alloc"] == pytest.approx(25000.0)
+    assert track["potential_tl_max"] == pytest.approx(25000.0)
+    assert track["potential_tl_avg"] == pytest.approx(25000.0)
 
 
 def test_global_only_panel_netbackup_enriched_free_qty():
@@ -990,7 +1310,8 @@ def test_inventory_uses_datacenter_codes_when_infra_bindings_wildcard_only():
     cpu = next(p for p in payload["panels"] if p["panel_key"] == "virt_classic_cpu")
     assert cpu["total"] == 100.0
     assert cpu["used_qty"] is None
-    assert cpu["free_qty"] == 100.0
+    assert cpu["free_qty"] == 90.0  # infra empty: 100 − allocated 10
+    assert cpu["unsold_qty"] == 100.0  # no CRM sold
     sellable._fetch_datacenter_codes.assert_called_once()
 
 
@@ -1284,14 +1605,33 @@ def test_ensure_s3_site_panels_injects_missing_nodes():
     sellable.compute_site_scoped_panels.assert_called_once()
 
 
-def test_warm_inventory_cache_force_recomputes_and_writes_redis(inventory_svc):
+def test_warm_inventory_cache_soft_default_bypasses_cache_read(inventory_svc):
+    inventory_svc.compute_inventory_overview = MagicMock(
+        return_value={"dc_code": "*", "summary": {}},
+    )
+
+    result = inventory_svc.warm_inventory_cache("*")
+
+    inventory_svc.compute_inventory_overview.assert_called_once_with(
+        dc_code="*",
+        force_recompute=False,
+        bypass_cache_read=True,
+    )
+    assert result["dc_code"] == "*"
+
+
+def test_warm_inventory_cache_force_recompute_and_writes_redis(inventory_svc):
     redis = MagicMock()
     inventory_svc._crm_redis = redis
     inventory_svc.compute_inventory_overview = MagicMock(return_value={"dc_code": "*", "summary": {}})
 
-    result = inventory_svc.warm_inventory_cache("*")
+    result = inventory_svc.warm_inventory_cache("*", force_recompute=True)
 
-    inventory_svc.compute_inventory_overview.assert_called_once_with(dc_code="*", force_recompute=True)
+    inventory_svc.compute_inventory_overview.assert_called_once_with(
+        dc_code="*",
+        force_recompute=True,
+        bypass_cache_read=True,
+    )
     assert result["dc_code"] == "*"
 
 

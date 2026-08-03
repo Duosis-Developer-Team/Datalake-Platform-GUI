@@ -15,6 +15,34 @@ from src.services import api_client as api
 
 _RATIO_TABLE_ID = "rr-table"
 
+# Known sellable families — Select options (value = family key).
+_FAMILY_OPTIONS: list[dict[str, str]] = [
+    {"value": "virt_classic", "label": "virt_classic — Klasik Mimari"},
+    {"value": "virt_hyperconverged", "label": "virt_hyperconverged — Hyperconverged"},
+    {"value": "virt_km", "label": "virt_km — KM"},
+    {"value": "virt_power", "label": "virt_power — IBM Power"},
+    {"value": "virt_intel_hana", "label": "virt_intel_hana — SAP Intel HANA"},
+    {"value": "virt_power_hana", "label": "virt_power_hana — SAP Power HANA"},
+    {
+        "value": "backup_veeam_replication_classic",
+        "label": "backup_veeam_replication_classic — Veeam Classic",
+    },
+    {
+        "value": "backup_zerto_replication_classic",
+        "label": "backup_zerto_replication_classic — Zerto Classic",
+    },
+    {
+        "value": "backup_veeam_replication_hyperconverged",
+        "label": "backup_veeam_replication_hyperconverged — Veeam HC",
+    },
+    {
+        "value": "backup_zerto_replication_hyperconverged",
+        "label": "backup_zerto_replication_hyperconverged — Zerto HC",
+    },
+    {"value": "backup_veeam_replication", "label": "backup_veeam_replication — Veeam (legacy)"},
+    {"value": "backup_zerto_replication", "label": "backup_zerto_replication — Zerto (legacy)"},
+]
+
 
 def _ratio_rows() -> list[dict]:
     out: list[dict] = []
@@ -65,7 +93,18 @@ def build_layout(search: str | None = None) -> html.Div:
                 dmc.Button("Reset form", id="rr-reset", size="xs", variant="subtle", color="gray"),
             ]),
             dmc.Grid(gutter="sm", children=[
-                dmc.GridCol(span={"base": 12, "md": 3}, children=dmc.TextInput(id="rr-family", label="family", size="xs", placeholder="virt_hyperconverged")),
+                dmc.GridCol(
+                    span={"base": 12, "md": 3},
+                    children=dmc.Select(
+                        id="rr-family",
+                        label="family",
+                        size="xs",
+                        data=_FAMILY_OPTIONS,
+                        searchable=True,
+                        clearable=True,
+                        placeholder="Select family",
+                    ),
+                ),
                 dmc.GridCol(span={"base": 12, "md": 2}, children=dmc.TextInput(id="rr-dc", label="dc_code", size="xs", value="*")),
                 dmc.GridCol(span={"base": 12, "md": 2}, children=dmc.NumberInput(id="rr-cpu", label="CPU per unit", size="xs", value=1, min=0)),
                 dmc.GridCol(span={"base": 12, "md": 2}, children=dmc.NumberInput(id="rr-ram", label="RAM GB per unit", size="xs", value=8, min=0)),
@@ -163,7 +202,7 @@ def _load_selected(selected, data):
     prevent_initial_call=True,
 )
 def _reset(_n):
-    return ("", "*", 1, 8, 100, "", [])
+    return (None, "*", 1, 8, 100, "", [])
 
 
 @callback(

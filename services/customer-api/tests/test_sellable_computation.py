@@ -5,6 +5,8 @@ or framework wiring — they should run in milliseconds even on CI.
 """
 from __future__ import annotations
 
+import pytest
+
 from shared.sellable.computation import (
     apply_threshold,
     apply_utilization_gate,
@@ -157,6 +159,36 @@ def test_apply_storage_ratio_cap_zero_when_compute_zero():
     assert out["storage"].constraint_reason == "compute_bottleneck"
 
 
+def test_apply_storage_dual_track_ratio_caps_mirrors_compute_tracks():
+    from shared.sellable.computation import apply_storage_dual_track_ratio_caps
+
+    cpu = _panel("cpu", 10.0, family="backup_veeam_replication_classic")
+    cpu.sellable_constrained = 0.0
+    cpu.sellable_allocation = 0.0
+    cpu.sellable_max_util = 0.0
+    cpu.sellable_avg_util = 141.0
+    ram = _panel("ram", 40.0, family="backup_veeam_replication_classic")
+    ram.sellable_constrained = 0.0
+    ram.sellable_allocation = 0.0
+    ram.sellable_max_util = 0.0
+    ram.sellable_avg_util = 564.0
+    sto = _panel("storage", 50000.0, family="backup_veeam_replication_classic")
+    sto.sellable_raw = 50000.0
+    sto.sellable_constrained = 0.0
+    ratio = ResourceRatio(
+        family="backup_veeam_replication_classic",
+        cpu_per_unit=1.0,
+        ram_gb_per_unit=4.0,
+        storage_gb_per_unit=50.0,
+    )
+    out = {p.resource_kind: p for p in apply_storage_dual_track_ratio_caps([cpu, ram, sto], ratio)}
+    assert out["storage"].sellable_allocation == pytest.approx(0.0)
+    assert out["storage"].sellable_max_util == pytest.approx(0.0)
+    # n_avg = min(141/1, 564/4) = 141 → storage Ort = 141 * 50
+    assert out["storage"].sellable_avg_util == pytest.approx(7050.0)
+    assert out["storage"].sellable_constrained == pytest.approx(0.0)
+
+
 def test_constrain_by_ratio_zero_when_any_resource_is_zero():
     panels = [_panel("cpu", 4.0), _panel("ram", 0.0), _panel("storage", 500.0)]
     ratio = ResourceRatio(family="virt_hyperconverged", cpu_per_unit=1.0, ram_gb_per_unit=8.0, storage_gb_per_unit=100.0)
@@ -305,9 +337,14 @@ def test_compute_primary_vs_alternate_pool_range_clamps_negative():
 
 
 def test_dedupe_shared_pool_tl_sums_lo_and_takes_max_hi():
-    """IBM-style TL merge: lo = a_lo + b_lo, hi = max(a_hi, b_hi)."""
+    """IBM-style TL merge: lo = a_lo + b_lo, hi = max(a_hi, b_hi, lo)."""
     assert dedupe_shared_pool_tl(10.0, 100.0, 20.0, 80.0) == (30.0, 100.0)
     assert dedupe_shared_pool_tl(10.0, 50.0, 20.0, 80.0) == (30.0, 80.0)
+
+
+def test_dedupe_shared_pool_tl_hi_never_below_sum_of_mins():
+    """When both mins exceed either max, merged hi floors at lo (no min > max)."""
+    assert dedupe_shared_pool_tl(30.0, 40.0, 25.0, 35.0) == (55.0, 55.0)
 
 
 def test_dedupe_shared_pool_tl_with_zero_alternate():

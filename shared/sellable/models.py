@@ -47,6 +47,51 @@ class ResourceRatio:
     notes: str | None = None
 
 
+#: Valid values for :attr:`StorageCoupling.mode`.
+STORAGE_COUPLING_MODES: tuple[str, ...] = ("auto", "merged", "separate")
+
+#: Valid values for :attr:`StorageCoupling.scope_kind`.
+STORAGE_COUPLING_SCOPES: tuple[str, ...] = ("family", "cluster")
+
+
+@dataclass(frozen=True)
+class StorageCoupling:
+    """Whether a family's storage is sized together with its compute.
+
+    ``merged``   — storage joins the compute constraint and is capped by the
+                   CPU/RAM bottleneck (hyperconverged semantics).
+    ``separate`` — storage is sized from its own pool, never ratio-capped
+                   (classic VMware + external SAN / IBM Power semantics).
+    ``auto``     — leave the built-in per-family behaviour untouched.
+
+    ``scope_kind`` narrows the rule below the family. ``'family'`` (with an empty
+    ``scope_key``) is the whole environment; ``'cluster'`` names one cluster
+    inside it and wins over the family row. Cluster scope only bites for families
+    whose sellable is computed host-by-host — everywhere else there is no host
+    row to attach it to.
+    """
+
+    family: str
+    dc_code: str = "*"
+    mode: str = "auto"
+    notes: str | None = None
+    updated_by: str | None = None
+    scope_kind: str = "family"
+    scope_key: str = ""
+
+    @property
+    def is_merged(self) -> bool:
+        return self.mode == "merged"
+
+    @property
+    def is_separate(self) -> bool:
+        return self.mode == "separate"
+
+    @property
+    def is_cluster_scoped(self) -> bool:
+        return self.scope_kind == "cluster"
+
+
 @dataclass(frozen=True)
 class UnitConversion:
     from_unit: str

@@ -1789,6 +1789,7 @@ def build_image_backup_section(
     has_netbackup: bool = False,
     has_nutanix: bool = False,
     content_mode: str = "full",
+    km_sellable: list | None = None,
 ) -> html.Div:
     """Image Backup category: Classic KM (NetBackup) + Hyperconverged (Nutanix)."""
     mode = (content_mode or "full").strip().lower()
@@ -1809,20 +1810,26 @@ def build_image_backup_section(
 
     panels = []
     if has_netbackup:
+        km_children: list = []
+        if km_sellable:
+            km_children.extend(km_sellable)
+        km_children.append(
+            html.Div(
+                id="backup-netbackup-panel-image",
+                children=build_netbackup_panel(
+                    nb_data or {},
+                    selected_pools,
+                    category="image",
+                    policy_type_options=policy_type_options,
+                    content_mode=mode,
+                ),
+            )
+        )
         panels.append(
             dmc.TabsPanel(
                 value="km",
                 pt="lg",
-                children=html.Div(
-                    id="backup-netbackup-panel-image",
-                    children=build_netbackup_panel(
-                        nb_data or {},
-                        selected_pools,
-                        category="image",
-                        policy_type_options=policy_type_options,
-                        content_mode=mode,
-                    ),
-                ),
+                children=html.Div(children=km_children),
             )
         )
     elif any(v == "km" for v, _ in tab_defs):
@@ -1889,6 +1896,256 @@ def build_application_backup_section(
     )
 
 
+def build_veeam_category_section(
+    *,
+    veeam_data: dict | None = None,
+    veeam_license: dict | None = None,
+    content_mode: str = "full",
+    show_licenses: bool = False,
+) -> html.Div:
+    """Veeam peer category: nested Replication | Backup sub-tabs."""
+    mode = (content_mode or "full").strip().lower()
+    data = veeam_data or {}
+    license_panel = (
+        None
+        if (mode == "shell" or not show_licenses)
+        else build_veeam_license_panel(veeam_license)
+    )
+
+    replication_body = html.Div(
+        children=[
+            dmc.Text(
+                "Replication: session/job types from Backup Mapping "
+                "(defaults: ReplicaJob, VSphereReplica).",
+                size="xs",
+                c="dimmed",
+                mb="sm",
+            ),
+            build_job_stats_section("veeam"),
+            _veeam_repos_capacity_block(data, content_mode=mode),
+        ]
+    )
+    backup_body = html.Div(
+        children=[
+            dmc.Alert(
+                "Backup: session/job types from Backup Mapping "
+                "(defaults: Backup, BackupJob). Sellable uses Cloud Connect Backup "
+                "/ backup_veeam_image inventory — not virt alternate pool. "
+                "Repository capacity is shown under the Replication sub-tab.",
+                color="cyan",
+                variant="light",
+                title="Veeam Backup",
+                mb="md",
+            ),
+            dmc.Text(
+                "Unique jobs inventory is shared above (all Veeam jobs). "
+                "Filter by session type using Backup Mapping Replication vs Backup lists.",
+                size="xs",
+                c="dimmed",
+            ),
+        ]
+    )
+
+    children = [
+        _unique_jobs_section("veeam", scope="dc"),
+        dmc.Tabs(
+            color="cyan",
+            variant="pills",
+            radius="md",
+            id="backup-veeam-mode-tabs",
+            value="replication",
+            children=[
+                dmc.TabsList(
+                    children=[
+                        dmc.TabsTab("Replication", value="replication"),
+                        dmc.TabsTab("Backup", value="backup"),
+                    ]
+                ),
+                dmc.TabsPanel(value="replication", pt="lg", children=replication_body),
+                dmc.TabsPanel(value="backup", pt="lg", children=backup_body),
+            ],
+        )
+    ]
+    if show_licenses and license_panel is not None:
+        children.append(license_panel)
+    elif mode != "shell":
+        children.append(
+            dmc.Alert(
+                color="gray",
+                variant="light",
+                title="Licenses deferred",
+                children=(
+                    "Veeam license inventory is not in sellable scope yet. "
+                    "Configure Replication vs Backup types under Platform → Backup Mapping."
+                ),
+                mt="md",
+            )
+        )
+    return html.Div(children=children)
+
+
+def _veeam_repos_capacity_block(data: dict, *, content_mode: str = "full") -> html.Div:
+    """Repository selector + capacity accordion (shared by Veeam sub-tabs)."""
+    mode = (content_mode or "full").strip().lower()
+    agg = _aggregate_veeam(data or {}, None) if mode != "shell" else {"repos": []}
+    selector_value = [] if mode == "shell" else list(agg.get("repos") or [])
+    return html.Div(
+        children=[
+            html.Div(
+                style={
+                    "display": "flex",
+                    "justifyContent": "space-between",
+                    "alignItems": "center",
+                    "marginTop": "20px",
+                    "marginBottom": "12px",
+                },
+                children=[
+                    dmc.Group(
+                        gap="md",
+                        children=[
+                            DashIconify(
+                                icon="solar:cloud-storage-bold-duotone",
+                                width=28,
+                                style={"color": "#15AABF"},
+                            ),
+                            html.Div(
+                                children=[
+                                    html.H3(
+                                        "Veeam Repositories",
+                                        style={
+                                            "margin": 0,
+                                            "fontSize": "1rem",
+                                            "color": "#2B3674",
+                                        },
+                                    ),
+                                    html.P(
+                                        "Capacity, free and used space per repository.",
+                                        style={
+                                            "margin": "2px 0 0 0",
+                                            "fontSize": "0.8rem",
+                                            "color": "#A3AED0",
+                                        },
+                                    ),
+                                ]
+                            ),
+                        ],
+                    ),
+                    dmc.MultiSelect(
+                        id="backup-veeam-repo-selector",
+                        data=[{"label": r, "value": r} for r in (agg.get("repos") or [])],
+                        value=selector_value,
+                        clearable=True,
+                        searchable=True,
+                        nothingFoundMessage="No repositories",
+                        placeholder="Select repositories",
+                        size="sm",
+                        style={"minWidth": "260px"},
+                    ),
+                ],
+            ),
+            dmc.Accordion(
+                variant="separated",
+                chevronPosition="right",
+                children=[
+                    dmc.AccordionItem(
+                        value="capacity",
+                        children=[
+                            dmc.AccordionControl("Repository capacity"),
+                            dmc.AccordionPanel(
+                                _capacity_loading_target("backup-veeam-capacity")
+                            ),
+                        ],
+                    )
+                ],
+            ),
+        ]
+    )
+
+
+def build_zerto_category_section(
+    *,
+    zerto_data: dict | None = None,
+    zerto_license: dict | None = None,
+    content_mode: str = "full",
+    show_licenses: bool = False,
+) -> html.Div:
+    """Zerto peer category — replication only (no Backup sub-tab)."""
+    mode = (content_mode or "full").strip().lower()
+    children = [
+        dmc.Text(
+            "Zerto provides continuous replication only (VPG / VM matrix).",
+            size="xs",
+            c="dimmed",
+            mb="sm",
+        ),
+        html.Div(
+            id="backup-zerto-panel",
+            children=build_zerto_panel(zerto_data or {}, None, content_mode=mode),
+        ),
+    ]
+    if show_licenses:
+        lic = build_zerto_license_panel(zerto_license)
+        if lic is not None:
+            children.append(lic)
+    elif mode != "shell":
+        children.append(
+            dmc.Alert(
+                color="gray",
+                variant="light",
+                title="Licenses deferred",
+                children=(
+                    "License compliance will come from an external data source. "
+                    "Sellable capacity does not include license headroom."
+                ),
+                mt="md",
+            )
+        )
+    return html.Div(children=children)
+
+
+def build_veeam_replication_only_section(
+    *,
+    veeam_data: dict | None = None,
+    veeam_license: dict | None = None,
+    content_mode: str = "full",
+    show_licenses: bool = False,
+) -> html.Div:
+    """Veeam under Replication tab — replication jobs only (Backup lives under Image/App)."""
+    mode = (content_mode or "full").strip().lower()
+    data = veeam_data or {}
+    children = [
+        dmc.Text(
+            "Veeam Replication — session/job types from Backup Mapping "
+            "(defaults: ReplicaJob, VSphereReplica).",
+            size="xs",
+            c="dimmed",
+            mb="sm",
+        ),
+        _unique_jobs_section("veeam", scope="dc"),
+        build_job_stats_section("veeam"),
+        _veeam_repos_capacity_block(data, content_mode=mode),
+    ]
+    if show_licenses:
+        license_panel = None if mode == "shell" else build_veeam_license_panel(veeam_license)
+        if license_panel is not None:
+            children.append(license_panel)
+    elif mode != "shell":
+        children.append(
+            dmc.Alert(
+                color="gray",
+                variant="light",
+                title="Licenses deferred",
+                children=(
+                    "Veeam license inventory is not in sellable scope yet. "
+                    "Image vs Application backup session types are configured under "
+                    "Platform → Backup Mapping."
+                ),
+                mt="md",
+            )
+        )
+    return html.Div(children=children)
+
+
 def build_replication_section(
     *,
     veeam_data: dict | None = None,
@@ -1898,75 +2155,81 @@ def build_replication_section(
     has_veeam: bool = False,
     has_zerto: bool = False,
     content_mode: str = "full",
+    show_licenses: bool = False,
+    veeam_sellable: list | None = None,
+    zerto_sellable: list | None = None,
 ) -> html.Div:
-    """Replication category: Veeam + Zerto (+ licenses when data exists)."""
+    """Replication category: nested Veeam | Zerto tabs (Image Backup pattern).
+
+    Sellable families stay unified (ADR-0032 #28); architecture Classic/HC remains
+    a filter. Nested tabs are presentation-only.
+    """
     mode = (content_mode or "full").strip().lower()
     if mode == "shell":
         has_zerto = True
         has_veeam = True
 
     tab_defs: list[tuple[str, str]] = []
-    if has_zerto:
-        tab_defs.append(("zerto", "Zerto"))
     if has_veeam:
         tab_defs.append(("veeam", "Veeam"))
-    if not tab_defs:
-        return dmc.Alert(
-            color="gray",
-            variant="light",
-            title="No replication services",
-            children="No Veeam or Zerto infrastructure data for this datacenter.",
-        )
-
-    zerto_license_panel = None if mode == "shell" else build_zerto_license_panel(zerto_license)
-    veeam_license_panel = None if mode == "shell" else build_veeam_license_panel(veeam_license)
-
-    panels = []
     if has_zerto:
-        zerto_children = [
-            html.Div(
-                id="backup-zerto-panel",
-                children=build_zerto_panel(zerto_data or {}, None, content_mode=mode),
-            )
-        ]
-        if zerto_license_panel is not None:
-            zerto_children.append(zerto_license_panel)
-        elif mode != "shell" and (zerto_data or {}).get("sites"):
-            # Usage present but license payload empty — still show required note
-            zerto_children.append(
+        tab_defs.append(("zerto", "Zerto"))
+    if not tab_defs:
+        return html.Div(
+            children=[
                 dmc.Alert(
-                    color="grape",
-                    variant="light",
-                    title="License required",
-                    children="Zerto usage is present; license metrics were not returned for this DC.",
-                )
-            )
-        panels.append(dmc.TabsPanel(value="zerto", pt="lg", children=html.Div(children=zerto_children)))
-    if has_veeam:
-        veeam_children = [
-            html.Div(
-                id="backup-veeam-panel",
-                children=build_veeam_panel(veeam_data or {}, None, content_mode=mode),
-            )
-        ]
-        if veeam_license_panel is not None:
-            veeam_children.append(veeam_license_panel)
-        elif mode != "shell":
-            veeam_children.append(
-                dmc.Alert(
+                    "No Veeam or Zerto replication data for this datacenter.",
                     color="gray",
                     variant="light",
-                    title="Veeam license",
-                    children=(
-                        "Veeam license is managed at customer level via CRM sold. "
-                        "No DC-scoped license inventory in datalake."
-                    ),
                 )
+            ]
+        )
+
+    panels: list = []
+    if has_veeam:
+        veeam_children: list = list(veeam_sellable or [])
+        veeam_children.append(
+            build_veeam_replication_only_section(
+                veeam_data=veeam_data,
+                veeam_license=veeam_license,
+                content_mode=mode,
+                show_licenses=show_licenses,
             )
-        panels.append(dmc.TabsPanel(value="veeam", pt="lg", children=html.Div(children=veeam_children)))
+        )
+        panels.append(
+            dmc.TabsPanel(
+                value="veeam",
+                pt="lg",
+                children=html.Div(children=veeam_children),
+            )
+        )
+    if has_zerto:
+        zerto_children: list = list(zerto_sellable or [])
+        zerto_children.append(
+            build_zerto_category_section(
+                zerto_data=zerto_data,
+                zerto_license=zerto_license,
+                content_mode=mode,
+                show_licenses=show_licenses,
+            )
+        )
+        panels.append(
+            dmc.TabsPanel(
+                value="zerto",
+                pt="lg",
+                children=html.Div(children=zerto_children),
+            )
+        )
 
     return html.Div(
         children=[
+            dmc.Text(
+                "Replication — Veeam and Zerto nested tabs (unified sellable families; "
+                "architecture Classic/HC is a filter, not a separate product card).",
+                size="sm",
+                c="#2B3674",
+                mb="md",
+            ),
             dmc.Tabs(
                 color="violet",
                 variant="outline",
@@ -1979,7 +2242,7 @@ def build_replication_section(
                     ),
                     *panels,
                 ],
-            )
+            ),
         ]
     )
 

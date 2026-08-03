@@ -38,6 +38,11 @@ class _Rule:
 
 # Rules are evaluated top-to-bottom; first match wins.
 _RULES: tuple[_Rule, ...] = (
+    # ----- DR virt SKUs → Replication (before general virt rules) -----
+    _Rule("backup_replication_cpu", contains_all=("Intel CPU", "- DR")),
+    _Rule("backup_replication_ram", contains_all=("Intel RAM", "- DR")),
+    _Rule("backup_replication_storage", contains_all=("Intel Disk", "- DR")),
+
     # ----- Hyperconverged Mimari (Nutanix) -----
     _Rule("virt_hyperconverged_cpu",     contains_all=("Hyperconverged Mimari", "Intel CPU")),
     _Rule("virt_hyperconverged_ram",     contains_all=("Hyperconverged Mimari", "Intel RAM")),
@@ -61,13 +66,26 @@ _RULES: tuple[_Rule, ...] = (
     _Rule("virt_power_hana_ram",         contains_all=("SAP Power HANA", "RAM")),
     _Rule("virt_power_hana_storage",     contains_all=("SAP Power HANA", "Storage")),
 
-    # ----- Backup: Veeam Replication compute -----
+    # ----- Backup: Veeam Replication (classic vs hyperconverged before generic) -----
+    _Rule("backup_veeam_replication_classic_cpu",     contains_all=("Klasik Mimari", "Veeam Replication", "vCpu")),
+    _Rule("backup_veeam_replication_classic_ram",     contains_all=("Klasik Mimari", "Veeam Replication", "RAM")),
+    _Rule("backup_veeam_replication_classic_storage", contains_all=("Klasik Mimari", "Veeam Replication", "Disk")),
+    _Rule("backup_veeam_replication_hyperconverged_cpu",     contains_all=("Hyperconverged Mimari", "Veeam Replication", "vCpu")),
+    _Rule("backup_veeam_replication_hyperconverged_ram",     contains_all=("Hyperconverged Mimari", "Veeam Replication", "RAM")),
+    _Rule("backup_veeam_replication_hyperconverged_storage", contains_all=("Hyperconverged Mimari", "Veeam Replication", "Disk")),
+    # Legacy combined keys (fallback when architecture token missing)
     _Rule("backup_veeam_replication_cpu",     contains_all=("Veeam Replication", "vCpu")),
     _Rule("backup_veeam_replication_ram",     contains_all=("Veeam Replication", "RAM")),
     _Rule("backup_veeam_replication_storage", contains_all=("Veeam Replication", "Disk")),
     _Rule("backup_veeam_image",               contains_all=("Veeam Cloud Connect Backup",)),
 
-    # ----- Backup: Zerto Replication compute -----
+    # ----- Backup: Zerto Replication (classic vs hyperconverged before generic) -----
+    _Rule("backup_zerto_replication_classic_cpu",     contains_all=("Klasik Mimari", "Zerto Replication", "vCpu")),
+    _Rule("backup_zerto_replication_classic_ram",     contains_all=("Klasik Mimari", "Zerto Replication", "RAM")),
+    _Rule("backup_zerto_replication_classic_storage", contains_all=("Klasik Mimari", "Zerto Replication", "Disk")),
+    _Rule("backup_zerto_replication_hyperconverged_cpu",     contains_all=("Hyperconverged Mimari", "Zerto Replication", "vCpu")),
+    _Rule("backup_zerto_replication_hyperconverged_ram",     contains_all=("Hyperconverged Mimari", "Zerto Replication", "RAM")),
+    _Rule("backup_zerto_replication_hyperconverged_storage", contains_all=("Hyperconverged Mimari", "Zerto Replication", "Disk")),
     _Rule("backup_zerto_replication_cpu",     contains_all=("Zerto Replication", "vCpu")),
     _Rule("backup_zerto_replication_ram",     contains_all=("Zerto Replication", "RAM")),
     _Rule("backup_zerto_replication_storage", contains_all=("Zerto Replication", "Disk")),

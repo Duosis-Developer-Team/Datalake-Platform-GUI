@@ -10,6 +10,7 @@ from shared.backup.policy_classification import (
     load_policy_panel_mapping,
     policy_types_for_category,
 )
+from shared.backup.vm_role import annotate_vm_roles, sum_billable_virt_resources
 from shared.licensing.os_source import tally_vm_list, with_os_family
 from shared.nutanix import snapshot_helpers as nsnap
 from shared.vmware.host_cpu_ghz import (
@@ -77,12 +78,59 @@ class CustomerAdapter:
             for t, c in sorted(type_counts.items(), key=lambda item: (-item[1], item[0]))
         ]
 
+    @staticmethod
+    def partition_veeam_session_types(
+        session_types: list[dict] | None,
+    ) -> dict[str, list[dict]]:
+        """Split Sessions-by-Type rows into replica / backup / other buckets.
+
+        Uses ``classify_veeam_session_or_job_type`` on each row's ``type``
+        (session_type primary, jobs.type fallback already merged upstream).
+        """
+        from shared.backup.replica_classifier import classify_veeam_session_or_job_type
+
+        buckets: dict[str, list[dict]] = {
+            "replica": [],
+            "backup": [],
+            "image_backup": [],
+            "application_backup": [],
+            "other": [],
+        }
+        for row in session_types or []:
+            if not isinstance(row, dict):
+                continue
+            label = classify_veeam_session_or_job_type(str(row.get("type") or ""))
+            if label == "backup":
+                buckets["backup"].append(row)
+                buckets["image_backup"].append(row)
+            elif label == "image_backup":
+                buckets["image_backup"].append(row)
+                buckets["backup"].append(row)
+            elif label == "application_backup":
+                buckets["application_backup"].append(row)
+            elif label in buckets:
+                buckets[label].append(row)
+            else:
+                buckets["other"].append(row)
+        return buckets
+
     def _enrich_customer_vm_list(self, cursor, vm_list: list[dict]) -> list[dict]:
         def _loader():
             return self._run_rows(cursor, NETBOX_HOST_CPU_STRINGS)
 
         host_map = cached_host_map(_loader, default_ghz=DEFAULT_HOST_CPU_GHZ)
         return enrich_customer_vm_cpu_list(vm_list, host_map, default_ghz=DEFAULT_HOST_CPU_GHZ)
+
+    @staticmethod
+    def _apply_vm_roles_and_billable_totals(
+        vm_list: list[dict],
+        *,
+        zerto_names: list[str] | None = None,
+    ) -> tuple[list[dict], dict[str, float | int]]:
+        """Annotate VM roles and recompute virt sold totals excluding replicas."""
+        annotated = annotate_vm_roles(vm_list, zerto_names=zerto_names)
+        totals = sum_billable_virt_resources(annotated)
+        return annotated, totals
 
     def fetch(
         self,
@@ -219,9 +267,19 @@ class CustomerAdapter:
                     if r and r[0]
                 ]
                 classic_vm_list = self._enrich_customer_vm_list(cur, classic_vm_list)
-                classic_cpu_real = sum_cpu_real_total(classic_vm_list)
-                classic_cpu_used_avg = sum_cpu_used_ghz_avg_total(classic_vm_list)
-                classic_cpu_used_max = sum_cpu_used_ghz_max_total(classic_vm_list)
+                classic_vm_list, classic_virt = self._apply_vm_roles_and_billable_totals(
+                    classic_vm_list
+                )
+                classic_vm_count = int(classic_virt.get("vm_count") or 0)
+                classic_cpu = float(classic_virt.get("cpu") or 0.0)
+                classic_mem_gb = float(classic_virt.get("memory_gb") or 0.0)
+                classic_disk_gb = float(classic_virt.get("disk_gb") or 0.0)
+                billable_classic = [
+                    r for r in classic_vm_list if r.get("virt_billable") is not False
+                ]
+                classic_cpu_real = sum_cpu_real_total(billable_classic)
+                classic_cpu_used_avg = sum_cpu_used_ghz_avg_total(billable_classic)
+                classic_cpu_used_max = sum_cpu_used_ghz_max_total(billable_classic)
 
                 # --- Hyperconverged (non-KM VMware + all Nutanix, filtered by vm_name only) ---
                 hc_params = (
@@ -287,9 +345,15 @@ class CustomerAdapter:
                     if r and r[0]
                 ]
                 hc_vm_list = self._enrich_customer_vm_list(cur, hc_vm_list)
-                hc_cpu_real = sum_cpu_real_total(hc_vm_list)
-                hc_cpu_used_avg = sum_cpu_used_ghz_avg_total(hc_vm_list)
-                hc_cpu_used_max = sum_cpu_used_ghz_max_total(hc_vm_list)
+                hc_vm_list, hc_virt = self._apply_vm_roles_and_billable_totals(hc_vm_list)
+                hc_total = int(hc_virt.get("vm_count") or 0)
+                hc_cpu = float(hc_virt.get("cpu") or 0.0)
+                hc_mem_gb = float(hc_virt.get("memory_gb") or 0.0)
+                hc_disk_gb = float(hc_virt.get("disk_gb") or 0.0)
+                billable_hc = [r for r in hc_vm_list if r.get("virt_billable") is not False]
+                hc_cpu_real = sum_cpu_real_total(billable_hc)
+                hc_cpu_used_avg = sum_cpu_used_ghz_avg_total(billable_hc)
+                hc_cpu_used_max = sum_cpu_used_ghz_max_total(billable_hc)
 
                 # --- Pure Nutanix (AHV-only clusters, cluster lookup uses latest — no time filter) ---
                 pure_params = (pure, vm_pattern, start_ts, end_ts)
@@ -439,6 +503,8 @@ class CustomerAdapter:
                 # keep the Sessions by Type KPI in sync with the fallback inventory.
                 if veeam_defined_sessions == 0 and veeam_types:
                     veeam_defined_sessions = sum(int(t.get("count") or 0) for t in veeam_types)
+
+                veeam_type_buckets = self.partition_veeam_session_types(veeam_types)
 
                 netbackup_summary_row = self._run_row(
                     cur,
@@ -645,6 +711,7 @@ class CustomerAdapter:
                 "veeam": {
                     "defined_sessions": veeam_defined_sessions,
                     "session_types": veeam_types,
+                    "session_type_buckets": veeam_type_buckets,
                     "platforms": veeam_platforms,
                 },
                 "zerto": {

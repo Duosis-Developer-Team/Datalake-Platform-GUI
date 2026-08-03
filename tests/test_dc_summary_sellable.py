@@ -4,6 +4,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from src.pages.dc_summary_sellable import (
+    build_backup_sellable_block,
     build_sellable_executive_strip,
     build_summary_sellable_section,
     build_virt_compute_block,
@@ -35,7 +36,7 @@ def test_executive_strip_constrained_loss_zero_when_total_zero():
 
 def test_fmt_tl_range_shows_bounds():
     text = _fmt_tl_range(1000.0, 2000.0)
-    assert "–" in text or "-" in text
+    assert "?" in text or "-" in text
 
 
 def test_build_summary_sellable_section_with_mock_summary():
@@ -177,7 +178,7 @@ def test_executive_strip_merges_colocation_tl():
         colocation_tl=500.0,
     )
     text = str(strip)
-    # 1000 + 500 colo → 1.5 Bin TL range
+    # 1000 + 500 colo ? 1.5 Bin TL range
     assert "1.5" in text or "1,500" in text
 
 
@@ -204,7 +205,7 @@ def test_merge_power_single_panel_preserves_optional_tl_fields():
 
 
 def test_merge_power_infra_fields_use_max_not_sum():
-    """virt_power_hana aliases same IBM Power infra — Cap/Alloc must not double-count."""
+    """virt_power_hana aliases same IBM Power infra ? Cap/Alloc must not double-count."""
     merged = merge_power_panels_for_summary([
         {"family": "virt_power", "resource_kind": "ram", "total": 174080, "allocated": 145856, "sellable_constrained": 0},
         {"family": "virt_power_hana", "resource_kind": "ram", "total": 174080, "allocated": 145856, "sellable_constrained": 0},
@@ -276,7 +277,7 @@ def test_storage_block_hides_tl_when_constrained_zero():
     ])
     text = str(block)
     assert "Hyperconverged Storage Sellable" in text
-    assert "—" in text
+    assert "?" in text
 
 
 def test_merge_power_constraint_metadata_prefers_compute_bottleneck():
@@ -302,3 +303,26 @@ def test_merge_power_constraint_metadata_prefers_compute_bottleneck():
     assert sto["constraint_reason"] == "compute_bottleneck"
     assert sto["ratio_bound"] is True
     assert sto["bottleneck_kind"] == "cpu"
+
+def test_build_backup_sellable_block_shows_min_max_tl():
+    panels = [
+        {
+            "family": "backup_veeam_replication",
+            "resource_kind": "cpu",
+            "potential_tl": 0.0,
+            "potential_tl_min": 0.0,
+            "potential_tl_max": 12000.0,
+        },
+        {
+            "family": "backup_veeam_replication",
+            "resource_kind": "storage",
+            "potential_tl": 5000.0,
+            "potential_tl_min": 5000.0,
+            "potential_tl_max": 5000.0,
+        },
+    ]
+    block = build_backup_sellable_block(panels=panels)
+    assert block is not None
+    text = str(block)
+    assert "Veeam" in text
+    assert "12" in text or "\u2013" in text or "-" in text

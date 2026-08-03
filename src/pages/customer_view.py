@@ -1350,6 +1350,17 @@ def _tab_classic(
 
     spec = [
         _VmCol("VM Name", lambda r: html.Td(r.get("name"))),
+        _VmCol(
+            "Role",
+            lambda r: html.Td(
+                dmc.Badge(
+                    r.get("role_label") or "Billable",
+                    color=r.get("role_color") or "teal",
+                    variant="light",
+                    size="sm",
+                )
+            ),
+        ),
         _VmCol("Cluster", lambda r: html.Td(r.get("cluster", "-")), infra=True),
         _VmCol("İşletim Sistemi", _vm_os_td),
         *_usage_pct_cols(),
@@ -1419,6 +1430,17 @@ def _tab_hyperconv(
 
     spec = [
         _VmCol("VM Name", lambda r: html.Td(r.get("name"))),
+        _VmCol(
+            "Role",
+            lambda r: html.Td(
+                dmc.Badge(
+                    r.get("role_label") or "Billable",
+                    color=r.get("role_color") or "teal",
+                    variant="light",
+                    size="sm",
+                )
+            ),
+        ),
         _VmCol("Source", lambda r: html.Td(r.get("source", "-")), infra=True),
         _VmCol("Cluster", lambda r: html.Td(r.get("cluster", "-")), infra=True),
         _VmCol("İşletim Sistemi", _vm_os_td),
@@ -1610,33 +1632,112 @@ def _tab_power(
 def _tab_veeam(backup_assets: dict, backup_totals: dict, crm_eff_panel: html.Div | None = None):
     veeam       = backup_assets.get("veeam", {}) or {}
     veeam_types = veeam.get("session_types", []) or []
+    buckets     = veeam.get("session_type_buckets") or {}
+    replica_types = buckets.get("replica") or []
+    backup_types = buckets.get("backup") or []
     defined     = int(backup_totals.get("veeam_defined_sessions", 0) or 0)
 
-    head_v = [crm_eff_panel] if crm_eff_panel is not None and getattr(crm_eff_panel, "children", None) else []
-    kpi_v = _build_metrics_grid(
-        [
-            (defined, "Defined sessions", f"{defined:,}", "material-symbols:backup-outline", "indigo"),
-            (len(veeam_types), "Session types", f"{len(veeam_types):,}", "material-symbols:list-alt-outline", "teal"),
-        ],
-        cols=2,
-    )
-    body_v = head_v + ([kpi_v] if kpi_v is not None else [])
-    body_v.append(
-        _section_card("Sessions by Type", "Veeam backup session distribution",
-            dmc.Table(
-                striped=True, highlightOnHover=True,
+    mode_tabs = dmc.Tabs(
+        id="customer-veeam-mode-tabs",
+        color="cyan",
+        variant="pills",
+        radius="md",
+        value="replication",
+        children=[
+            dmc.TabsList(
                 children=[
-                    html.Thead(html.Tr([html.Th("Session Type"), html.Th("Defined Sessions")])),
+                    dmc.TabsTab("Replication", value="replication"),
+                    dmc.TabsTab("Backup", value="backup"),
+                ]
+            ),
+            dmc.TabsPanel(
+                value="replication",
+                pt="md",
+                children=html.Div(
+                    children=[
+                        dmc.Text(
+                            "Session types mapped as Replication (Backup Mapping).",
+                            size="xs",
+                            c="dimmed",
+                            mb="sm",
+                        ),
+                        html.Table(
+                            className="simple-table",
+                            children=[
+                                html.Thead(html.Tr([html.Th("Type"), html.Th("Count")])),
+                                html.Tbody(
+                                    [
+                                        html.Tr(
+                                            [html.Td(r.get("type")), html.Td(r.get("count", 0))]
+                                        )
+                                        for r in replica_types
+                                    ]
+                                    if replica_types
+                                    else [html.Tr([html.Td("No replication types", colSpan=2)])]
+                                ),
+                            ],
+                        ),
+                    ]
+                ),
+            ),
+            dmc.TabsPanel(
+                value="backup",
+                pt="md",
+                children=html.Div(
+                    children=[
+                        dmc.Text(
+                            "Session types mapped as Backup (Backup Mapping).",
+                            size="xs",
+                            c="dimmed",
+                            mb="sm",
+                        ),
+                        html.Table(
+                            className="simple-table",
+                            children=[
+                                html.Thead(html.Tr([html.Th("Type"), html.Th("Count")])),
+                                html.Tbody(
+                                    [
+                                        html.Tr(
+                                            [html.Td(r.get("type")), html.Td(r.get("count", 0))]
+                                        )
+                                        for r in backup_types
+                                    ]
+                                    if backup_types
+                                    else [html.Tr([html.Td("No backup types", colSpan=2)])]
+                                ),
+                            ],
+                        ),
+                    ]
+                ),
+            ),
+        ],
+    )
+
+    return dmc.Stack(
+        gap="md",
+        children=[
+            _kpi_strip(
+                [
+                    (defined, "Defined sessions", f"{defined:,}", "material-symbols:backup-outline", "indigo"),
+                    (len(veeam_types), "Session types", f"{len(veeam_types):,}", "material-symbols:list-alt-outline", "teal"),
+                ]
+            ),
+            crm_eff_panel,
+            mode_tabs,
+            dmc.Text("All session types", fw=600, size="sm"),
+            html.Table(
+                className="simple-table",
+                children=[
+                    html.Thead(html.Tr([html.Th("Type"), html.Th("Count")])),
                     html.Tbody(
                         [html.Tr([html.Td(r.get("type")), html.Td(r.get("count", 0))]) for r in veeam_types]
                         if veeam_types
-                        else [html.Tr([html.Td("No data", colSpan=2)])],
+                        else [html.Tr([html.Td("No session types", colSpan=2)])]
                     ),
                 ],
             ),
-        )
+        ],
     )
-    return dmc.Stack(gap="lg", children=body_v)
 
 
 def _tab_zerto(backup_assets: dict, backup_totals: dict, crm_eff_panel: html.Div | None = None):
@@ -2406,40 +2507,53 @@ def _build_backup_tabs(
     has_zerto = backup_vendor_has_data(backup_totals, backup_assets, "zerto")
     license_rows = backup_assets.get("license_compliance") or []
     if has_veeam or has_zerto:
-        repl_children: list = []
+        repl_children: list = [
+            dmc.Text(
+                "Replication — Veeam and Zerto (unified families; Classic/HC is filter only).",
+                size="sm",
+                c="#2B3674",
+                mb="md",
+            ),
+        ]
         if has_veeam:
-            repl_children.append(
-                _tab_veeam(
-                    backup_assets,
-                    backup_totals,
-                    crm_eff_panel=_eff_panel("backup.veeam"),
-                )
+            repl_children.extend(
+                [
+                    dmc.Title("Veeam Replication", order=5, c="#2B3674", mb="sm"),
+                    _tab_veeam(
+                        backup_assets,
+                        backup_totals,
+                        crm_eff_panel=_eff_panel("backup.veeam"),
+                    ),
+                    build_unique_jobs_inventory_section("veeam", scope="customer"),
+                ]
             )
-            repl_children.append(build_unique_jobs_inventory_section("veeam", scope="customer"))
-        if has_zerto:
-            repl_children.append(
-                _tab_zerto(
-                    backup_assets,
-                    backup_totals,
-                    crm_eff_panel=_eff_panel("backup.zerto"),
-                )
-            )
-            repl_children.append(build_unique_jobs_inventory_section("zerto", scope="customer"))
-        # License compliance cards (K-03) — prefer assets.backup.license_compliance.
-        from src.components.backup_panel import build_veeam_license_panel
+            from src.components.backup_panel import build_veeam_license_panel
 
-        lic_panel = build_veeam_license_panel(None, license_compliance=license_rows)
-        if lic_panel is None and include_sold_vs_used:
-            veeam_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.veeam")
-            if veeam_lic is None:
-                veeam_lic = _crm_license_panel_from_efficiency(eff_by_cat, "backup.veeam")
-            if veeam_lic is not None:
-                repl_children.append(veeam_lic)
-            zerto_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.zerto")
-            if zerto_lic is not None:
-                repl_children.append(zerto_lic)
-        elif lic_panel is not None:
-            repl_children.append(lic_panel)
+            lic_panel = build_veeam_license_panel(None, license_compliance=license_rows)
+            if lic_panel is None and include_sold_vs_used:
+                veeam_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.veeam")
+                if veeam_lic is None:
+                    veeam_lic = _crm_license_panel_from_efficiency(eff_by_cat, "backup.veeam")
+                if veeam_lic is not None:
+                    repl_children.append(veeam_lic)
+            elif lic_panel is not None:
+                repl_children.append(lic_panel)
+        if has_zerto:
+            repl_children.extend(
+                [
+                    dmc.Title("Zerto Replication", order=5, c="#2B3674", mb="sm", mt="lg"),
+                    _tab_zerto(
+                        backup_assets,
+                        backup_totals,
+                        crm_eff_panel=_eff_panel("backup.zerto"),
+                    ),
+                    build_unique_jobs_inventory_section("zerto", scope="customer"),
+                ]
+            )
+            if include_sold_vs_used:
+                zerto_lic = _crm_license_panel_from_efficiency(eff_by_cat, "licensing.zerto")
+                if zerto_lic is not None:
+                    repl_children.append(zerto_lic)
         backup_tab_defs.append(
             ("replication", "Replication", dmc.Stack(gap="lg", children=repl_children))
         )

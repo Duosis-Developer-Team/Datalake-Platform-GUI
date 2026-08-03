@@ -39,6 +39,11 @@ from app.utils.time_range import (
 )
 from app.utils.format_units import smart_cpu, smart_memory, smart_storage
 from shared.backup.policy_classification import classify_netbackup_policy
+from shared.backup.replica_classifier import classify_vm_name, is_replica_like
+from shared.backup.nutanix_intersection import (
+    intersect_hc_nutanix_names,
+    sum_nutanix_disk_for_names,
+)
 from shared.backup.unique_jobs import (
     aggregate_unique_jobs,
     filter_unique_job_rows,
@@ -71,6 +76,12 @@ from app.services.netbox_viz_filter import (
 _DC_CODE_RE = re.compile(r'(DC\d+|AZ\d+|ICT\d+|UZ\d+|DH\d+)', re.IGNORECASE)
 
 logger = logging.getLogger(__name__)
+
+# IBM Power reports processor capacity in processing units; one procunit is a
+# whole physical core split 8 ways by the hypervisor. Every Power figure the GUI
+# and the sellable pipeline show is in cores, so the conversion lives here rather
+# than being spelled 8.0 at each call site.
+POWER_CORES_PER_PROCUNIT = 8.0
 
 # Fallback DC list used when loki_locations is unreachable.
 _FALLBACK_DC_LIST = [
@@ -958,33 +969,44 @@ LIMIT 20
         end_ts,
         cluster_filter: list[str] | None = None,
     ) -> dict:
+        """HC VM allocation SoT is Nutanix; VMware is management-plane fallback only.
+
+        ADR-0032 #35: do not sum VMware + Nutanix as a second capacity pool.
+        """
         dc_wc = f"%{dc_code}%"
-        vmw = self._compute_vmware_vm_allocation(
-            cursor, dc_wc, start_ts, end_ts, classic_km=False, cluster_filter=cluster_filter
-        )
         ntx = self._compute_nutanix_vm_allocation(
             cursor, dc_code, start_ts, end_ts, cluster_filter
         )
+        ntx_signal = (
+            float(ntx.get("cpu_alloc_ghz_sales") or 0)
+            + float(ntx.get("mem_alloc_gb_vm") or 0)
+            + float(ntx.get("stor_provisioned_gb") or 0)
+        )
+        if ntx_signal > 0:
+            return {
+                "stor_provisioned_gb": round(float(ntx.get("stor_provisioned_gb") or 0), 2),
+                "stor_actual_used_gb": round(float(ntx.get("stor_actual_used_gb") or 0), 2),
+                "cpu_alloc_ghz_vm": round(float(ntx.get("cpu_alloc_ghz_vm") or 0), 2),
+                "cpu_alloc_ghz_sales": round(float(ntx.get("cpu_alloc_ghz_sales") or 0), 2),
+                "mem_alloc_gb_vm": round(float(ntx.get("mem_alloc_gb_vm") or 0), 2),
+                "cpu_alloc_hosts_resolved": int(ntx.get("cpu_alloc_hosts_resolved") or 0),
+                "cpu_alloc_hosts_fallback_default": int(
+                    ntx.get("cpu_alloc_hosts_fallback_default") or 0
+                ),
+            }
+        vmw = self._compute_vmware_vm_allocation(
+            cursor, dc_wc, start_ts, end_ts, classic_km=False, cluster_filter=cluster_filter
+        )
         return {
-            "stor_provisioned_gb": round(
-                float(vmw.get("stor_provisioned_gb") or 0) + float(ntx.get("stor_provisioned_gb") or 0), 2
+            "stor_provisioned_gb": round(float(vmw.get("stor_provisioned_gb") or 0), 2),
+            "stor_actual_used_gb": round(float(vmw.get("stor_actual_used_gb") or 0), 2),
+            "cpu_alloc_ghz_vm": round(float(vmw.get("cpu_alloc_ghz_vm") or 0), 2),
+            "cpu_alloc_ghz_sales": round(float(vmw.get("cpu_alloc_ghz_sales") or 0), 2),
+            "mem_alloc_gb_vm": round(float(vmw.get("mem_alloc_gb_vm") or 0), 2),
+            "cpu_alloc_hosts_resolved": int(vmw.get("cpu_alloc_hosts_resolved") or 0),
+            "cpu_alloc_hosts_fallback_default": int(
+                vmw.get("cpu_alloc_hosts_fallback_default") or 0
             ),
-            "stor_actual_used_gb": round(
-                float(vmw.get("stor_actual_used_gb") or 0) + float(ntx.get("stor_actual_used_gb") or 0), 2
-            ),
-            "cpu_alloc_ghz_vm": round(
-                float(vmw.get("cpu_alloc_ghz_vm") or 0) + float(ntx.get("cpu_alloc_ghz_vm") or 0), 2
-            ),
-            "cpu_alloc_ghz_sales": round(
-                float(vmw.get("cpu_alloc_ghz_sales") or 0) + float(ntx.get("cpu_alloc_ghz_sales") or 0), 2
-            ),
-            "mem_alloc_gb_vm": round(
-                float(vmw.get("mem_alloc_gb_vm") or 0) + float(ntx.get("mem_alloc_gb_vm") or 0), 2
-            ),
-            "cpu_alloc_hosts_resolved": int(vmw.get("cpu_alloc_hosts_resolved") or 0)
-            + int(ntx.get("cpu_alloc_hosts_resolved") or 0),
-            "cpu_alloc_hosts_fallback_default": int(vmw.get("cpu_alloc_hosts_fallback_default") or 0)
-            + int(ntx.get("cpu_alloc_hosts_fallback_default") or 0),
         }
 
     @staticmethod
@@ -1063,8 +1085,9 @@ LIMIT 20
 
     @staticmethod
     def _compute_cache_key(kind: str, dc_code: str, tr: dict, clusters: list[str]) -> str:
+        # v2: HC allocation SoT is Nutanix-only (no VMware double-count)
         cluster_part = ",".join(sorted(clusters))
-        return f"compute:{kind}:{dc_code}:{tr.get('start', '')}:{tr.get('end', '')}:{cluster_part}"
+        return f"compute:v2:{kind}:{dc_code}:{tr.get('start', '')}:{tr.get('end', '')}:{cluster_part}"
 
     def _get_compute_cached(self, key: str) -> dict | None:
         val, _stale = cache.get_with_stale(key)
@@ -1496,19 +1519,417 @@ LIMIT 20
         self._set_compute_cached(cache_key, section)
         return section
 
+    def get_replica_allocation_offset(
+        self,
+        dc_code: str,
+        time_range: dict | None = None,
+        *,
+        architecture: str = "classic",
+    ) -> dict:
+        """Sum CPU/RAM allocated to replica/Zerto VMs (exclude from virt sellable).
+
+        Classic = VMware KM VM rows (name-bucket replica + Zerto names).
+        HC = Nutanix VM SoT rows (same classifiers). Returns vCPU + RAM GB.
+        """
+        from shared.backup.vm_role import resolve_vm_role
+
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        arch = (architecture or "classic").strip().lower()
+        dc_pattern = f"%{dc_code}%"
+        cpu_vcpu = 0.0
+        ram_gb = 0.0
+        vm_count = 0
+        zerto_names: set[str] = set()
+
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    raw_z = self._run_rows(
+                        cur, bq.ZERTO_VM_NAMES_DISTINCT, (start_ts, end_ts),
+                    ) or []
+                    filtered_z = self._filter_rows_for_dc_by_name_and_host(
+                        raw_z, dc_code, name_index=0, host_index=1,
+                    )
+                    zerto_names = {
+                        str(r[0]).strip().casefold()
+                        for r in filtered_z
+                        if r and r[0]
+                    }
+
+                    if arch in ("hyperconverged", "hyperconv", "hc"):
+                        rows = self._run_rows(
+                            cur,
+                            nq.NUTANIX_VM_ALLOCATION_NAMED,
+                            (dc_code, start_ts, end_ts, start_ts, end_ts),
+                        ) or []
+                    else:
+                        rows = self._run_rows(
+                            cur,
+                            vq.CLASSIC_VM_ALLOCATION_NAMED,
+                            (dc_pattern, start_ts, end_ts),
+                        ) or []
+        except OperationalError as exc:
+            logger.warning(
+                "get_replica_allocation_offset failed for %s/%s: %s",
+                dc_code, arch, exc,
+            )
+            return {
+                "cpu_vcpu": 0.0,
+                "ram_gb": 0.0,
+                "vm_count": 0,
+                "architecture": (
+                    "hyperconverged"
+                    if arch in ("hyperconverged", "hyperconv", "hc")
+                    else "classic"
+                ),
+            }
+
+        for row in rows:
+            if not row or not row[0]:
+                continue
+            name = str(row[0])
+            role = resolve_vm_role(name, zerto_names=zerto_names)
+            if role in ("billable", "veeam_backup", "silinecek"):
+                continue
+            cpu_vcpu += float(row[1] or 0.0)
+            ram_gb += float(row[2] or 0.0)
+            vm_count += 1
+
+        return {
+            "cpu_vcpu": round(cpu_vcpu, 3),
+            "ram_gb": round(ram_gb, 3),
+            "vm_count": vm_count,
+            "architecture": (
+                "hyperconverged"
+                if arch in ("hyperconverged", "hyperconv", "hc")
+                else "classic"
+            ),
+            "notes": [
+                "Non-billable virt allocation (replica/Zerto/custom); "
+                "subtract from virt sellable allocated",
+            ],
+        }
+
     def get_backup_replication_compute(
         self,
         dc_code: str,
         selected_clusters: list[str] | None,
         time_range: dict | None = None,
+        *,
+        architecture: str = "classic",
     ) -> dict:
-        """Return classic host capacity for Veeam/Zerto replication sellable.
+        """Return host CPU/RAM for Veeam/Zerto replication sellable.
 
-        Replication is an alternate claimant of the classic host pool, so it
-        must use the same capacity, allocation, and optional cluster scope as
-        ``/compute/classic``.
+        Replication is an alternate claimant of the virt **compute** pool
+        (CPU/RAM only). Storage is dedicated: Veeam uses non-NetBackup VMware
+        datastores (``get_veeam_replication_datastore_compute``); Zerto uses
+        non-Veeam/non-NetBackup VMware datastores plus site/VPG metrics.
+        Host storage fields are zeroed so callers never treat KM free disk as
+        replication storage from this endpoint.
+
+        Sellable CRM Inventory Classic/HC CPU/RAM prefer virt ``/hosts`` SoT
+        (bit-equal to virt_classic / virt_hyperconverged). This aggregate
+        endpoint remains for cluster fallback and diagnostics.
+
+        ``architecture``: ``classic`` (default) or ``hyperconverged``.
         """
-        return self.get_classic_metrics_filtered(dc_code, selected_clusters, time_range)
+        arch = (architecture or "classic").strip().lower()
+        if arch in ("hyperconverged", "hyperconv", "hc"):
+            section = self.get_hyperconv_metrics_filtered(
+                dc_code, selected_clusters, time_range
+            )
+            source_note = "replication compute from hyperconverged host/cluster pool"
+        else:
+            section = self.get_classic_metrics_filtered(
+                dc_code, selected_clusters, time_range
+            )
+            source_note = "replication compute from classic host pool"
+        out = dict(section or {})
+        out["stor_cap"] = 0.0
+        out["stor_provisioned_gb"] = 0.0
+        out["stor_pct"] = 0.0
+        notes = list(out.get("notes") or []) if isinstance(out.get("notes"), list) else []
+        note = "replication compute is CPU/RAM only; storage is dedicated"
+        if note not in notes:
+            notes.append(note)
+        if source_note not in notes:
+            notes.append(source_note)
+        out["notes"] = notes
+        out["architecture"] = (
+            "hyperconverged" if arch in ("hyperconverged", "hyperconv", "hc") else "classic"
+        )
+        return out
+
+    def _sum_datastore_storage_rows(self, rows: list, *, source: str) -> dict:
+        _bytes_per_tb = 1024 ** 4
+        _bytes_per_gb = 1024 ** 3
+        cap_bytes = 0.0
+        used_bytes = 0.0
+        names: list[str] = []
+        for row in rows or []:
+            if not row:
+                continue
+            name = str(row[1] or "").strip()
+            if name:
+                names.append(name)
+            cap_bytes += float(row[3] or 0)
+            used_bytes += float(row[5] or 0)
+
+        stor_cap = round(cap_bytes / _bytes_per_tb, 3) if cap_bytes else 0.0
+        stor_used_tb = used_bytes / _bytes_per_tb if used_bytes else 0.0
+        stor_provisioned_gb = round(used_bytes / _bytes_per_gb, 3) if used_bytes else 0.0
+        stor_pct = (
+            round(100.0 * stor_used_tb / stor_cap, 1) if stor_cap > 0 else 0.0
+        )
+        return {
+            "stor_cap": stor_cap,
+            "stor_provisioned_gb": stor_provisioned_gb,
+            "stor_pct": stor_pct,
+            "datastore_count": len(rows or []),
+            "datastores": names[:50],
+            "source": source,
+        }
+
+    def _hc_nutanix_disk_for_replication(
+        self,
+        dc_code: str,
+        time_range: dict | None,
+        *,
+        vendor: str,
+    ) -> dict[str, float | int]:
+        """Sum Nutanix disk for VMware ∩ Nutanix ∩ vendor-protected VMs (HC replication).
+
+        Veeam uses name-bucket replica-like names from the VMware∩Nutanix overlap
+        until object-level Veeam VM names exist. Zerto uses ``raw_zerto_vm_metrics``.
+        """
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        dc_pattern = f"%{dc_code}%"
+        nutanix_rows: list[dict] = []
+        vmware_names: list[str] = []
+        vendor_names: list[str] = []
+
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    nut_rows = self._run_rows(
+                        cur,
+                        nq.NUTANIX_VM_DISK_ROWS,
+                        (dc_code, start_ts, end_ts, start_ts, end_ts),
+                    ) or []
+                    nutanix_rows = [
+                        {"name": str(r[0]), "disk_gb": float(r[1] or 0.0)}
+                        for r in nut_rows
+                        if r and r[0]
+                    ]
+                    vmware_names = [
+                        str(r[0])
+                        for r in (
+                            self._run_rows(
+                                cur,
+                                vq.DC_HYPERCONV_VMWARE_VM_NAMES,
+                                (dc_pattern, start_ts, end_ts),
+                            )
+                            or []
+                        )
+                        if r and r[0]
+                    ]
+
+                    vendor_key = (vendor or "").strip().lower()
+                    nx_name_list = [r["name"] for r in nutanix_rows]
+                    if vendor_key == "zerto":
+                        raw_z = self._run_rows(
+                            cur,
+                            bq.ZERTO_VM_NAMES_DISTINCT,
+                            (start_ts, end_ts),
+                        ) or []
+                        filtered = self._filter_rows_for_dc_by_name_and_host(
+                            raw_z,
+                            dc_code,
+                            name_index=0,
+                            host_index=1,
+                        )
+                        vendor_names = [str(r[0]) for r in filtered if r and r[0]]
+                    elif vendor_key == "veeam":
+                        nx_fold = {str(n).strip().casefold() for n in nx_name_list if str(n).strip()}
+                        vendor_names = [
+                            n
+                            for n in vmware_names
+                            if str(n).strip().casefold() in nx_fold
+                            and is_replica_like(classify_vm_name(n))
+                        ]
+                    else:
+                        return {"disk_gb": 0.0, "vm_count": 0}
+        except OperationalError as exc:
+            logger.warning(
+                "_hc_nutanix_disk_for_replication failed for %s/%s: %s",
+                dc_code,
+                vendor,
+                exc,
+            )
+            return {"disk_gb": 0.0, "vm_count": 0}
+
+        matched = intersect_hc_nutanix_names(
+            vmware_names,
+            nx_name_list,
+            vendor_names,
+        )
+        return sum_nutanix_disk_for_names(nutanix_rows, matched)
+
+    def get_veeam_replication_datastore_compute(
+        self,
+        dc_code: str,
+        time_range: dict | None = None,
+        *,
+        include_nutanix: bool = False,
+    ) -> dict:
+        """Sum capacity/used for Veeam-eligible VMware datastores (all except NetBackup).
+
+        When ``include_nutanix`` is True (HC path), add Nutanix cluster storage
+        free capacity for VMs that can use Nutanix disks under VMware management.
+        """
+        from app.db.queries import vmware_datastore as dsq
+
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        rows: list = []
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(
+                        cur,
+                        dsq.DATASTORE_METRICS_VEEAM_REPLICATION,
+                        (dc_code, start_ts, end_ts),
+                    ) or []
+        except OperationalError as exc:
+            logger.warning(
+                "get_veeam_replication_datastore_compute failed for %s: %s",
+                dc_code,
+                exc,
+            )
+            rows = []
+
+        out = self._sum_datastore_storage_rows(rows, source="vmware_datastore_veeam_eligible")
+        notes = [
+            "Veeam storage sellable: eligible VMware datastores except NetBackup "
+            "(new replication demand can open capacity from this pool; not limited "
+            "to current Veeam repositories)",
+            "Veeam storage sold/comparison: CRM Sold + repository/demand-opened "
+            "context on inventory rows",
+        ]
+        if include_nutanix:
+            nut = self._hc_nutanix_disk_for_replication(
+                dc_code, time_range, vendor="veeam"
+            )
+            nut_disk_gb = float(nut.get("disk_gb") or 0.0)
+            nut_cap = round(nut_disk_gb / 1024.0, 3) if nut_disk_gb > 0 else 0.0
+            nut_prov = round(nut_disk_gb, 3) if nut_disk_gb > 0 else 0.0
+            if nut_cap > 0:
+                out["stor_cap"] = round(float(out.get("stor_cap") or 0.0) + nut_cap, 3)
+                out["stor_provisioned_gb"] = round(
+                    float(out.get("stor_provisioned_gb") or 0.0) + nut_prov, 3
+                )
+                used_tb = float(out.get("stor_provisioned_gb") or 0.0) / 1024.0
+                cap = float(out.get("stor_cap") or 0.0)
+                out["stor_pct"] = round(100.0 * used_tb / cap, 1) if cap > 0 else 0.0
+                out["nutanix_stor_cap_tb"] = nut_cap
+                out["nutanix_intersection_vm_count"] = int(nut.get("vm_count") or 0)
+                notes.append(
+                    "HC: Nutanix disk from VMware∩Nutanix∩Veeam-replica name intersection"
+                )
+            out["source"] = "vmware_plus_nutanix_veeam_eligible"
+        out["notes"] = notes
+        return out
+
+    def get_zerto_replication_datastore_compute(
+        self,
+        dc_code: str,
+        time_range: dict | None = None,
+        *,
+        include_nutanix: bool = False,
+    ) -> dict:
+        """Sum capacity/used for Zerto-eligible VMware datastores (except Veeam+NetBackup)."""
+        from app.db.queries import vmware_datastore as dsq
+
+        tr = time_range or default_time_range()
+        start_ts, end_ts = time_range_to_bounds(tr)
+        rows: list = []
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    rows = self._run_rows(
+                        cur,
+                        dsq.DATASTORE_METRICS_ZERTO_REPLICATION,
+                        (dc_code, start_ts, end_ts),
+                    ) or []
+        except OperationalError as exc:
+            logger.warning(
+                "get_zerto_replication_datastore_compute failed for %s: %s",
+                dc_code,
+                exc,
+            )
+            rows = []
+
+        out = self._sum_datastore_storage_rows(rows, source="vmware_datastore_zerto_eligible")
+        notes = [
+            "Zerto storage: classic VMware datastores except Veeam and NetBackup",
+        ]
+        if include_nutanix:
+            nut = self._hc_nutanix_disk_for_replication(
+                dc_code, time_range, vendor="zerto"
+            )
+            nut_disk_gb = float(nut.get("disk_gb") or 0.0)
+            nut_cap = round(nut_disk_gb / 1024.0, 3) if nut_disk_gb > 0 else 0.0
+            nut_prov = round(nut_disk_gb, 3) if nut_disk_gb > 0 else 0.0
+            if nut_cap > 0:
+                out["stor_cap"] = round(float(out.get("stor_cap") or 0.0) + nut_cap, 3)
+                out["stor_provisioned_gb"] = round(
+                    float(out.get("stor_provisioned_gb") or 0.0) + nut_prov, 3
+                )
+                used_tb = float(out.get("stor_provisioned_gb") or 0.0) / 1024.0
+                cap = float(out.get("stor_cap") or 0.0)
+                out["stor_pct"] = round(100.0 * used_tb / cap, 1) if cap > 0 else 0.0
+                out["nutanix_stor_cap_tb"] = nut_cap
+                out["nutanix_intersection_vm_count"] = int(nut.get("vm_count") or 0)
+                notes.append(
+                    "HC: Nutanix disk from VMware∩Nutanix∩Zerto VM intersection"
+                )
+            out["source"] = "vmware_plus_nutanix_zerto_eligible"
+
+        notes.append(
+            "Zerto storage primary: VMware datastore pools; site metrics are "
+            "inventory context only (not added to sellable stor_cap)"
+        )
+        ds_cap = float(out.get("stor_cap") or 0.0)
+        try:
+            sites_data = self._fetch_dc_zerto_sites(dc_code, start_ts, end_ts)
+            site_rows = sites_data.get("rows") or []
+            site_prov_gb = round(
+                sum(float(r.get("provisioned_storage_mb") or 0.0) / 1024.0 for r in site_rows),
+                3,
+            )
+            site_used_gb = round(
+                sum(float(r.get("used_storage_mb") or 0.0) / 1024.0 for r in site_rows),
+                3,
+            )
+            if ds_cap < 0.001 and (site_prov_gb > 0 or site_used_gb > 0):
+                out["site_provisioned_gb"] = site_prov_gb
+                out["site_used_gb"] = site_used_gb
+                out["site_count"] = len(site_rows)
+                notes.append(
+                    f"Site context: {len(site_rows)} Zerto site(s) report "
+                    f"{site_prov_gb:.1f} GB provisioned / {site_used_gb:.1f} GB used "
+                    "(not merged into sellable stor_cap)"
+                )
+        except OperationalError as exc:
+            logger.warning(
+                "get_zerto_replication_datastore_compute site context failed for %s: %s",
+                dc_code,
+                exc,
+            )
+        out["notes"] = notes
+        return out
 
     def get_backup_nutanix_compute(
         self,
@@ -1936,6 +2357,149 @@ LIMIT 20
         clusters = sorted(c for c in (selected_clusters or []) if c)
         return self._slice_host_rows_payload(cached_val, clusters or None)
 
+    def _fetch_power_host_rows_all(self, dc_code: str, time_range: dict) -> dict:
+        """Load all IBM Power frames for a DC/time range as host rows.
+
+        A frame is the host: capacity from ibm_server_general, allocation from
+        rolling up its LPARs. Everything is emitted in the units the virt_power
+        panels display -- CPU in cores (procunits x 8), memory in GB.
+        """
+        start_ts, end_ts = time_range_to_bounds(time_range)
+        dc_wc = f"%{dc_code}%"
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    frame_rows = self._run_rows(
+                        cur, iq.POWER_HOST_ROWS, (dc_wc, start_ts, end_ts)
+                    )
+                    alloc_rows = self._run_rows(
+                        cur, iq.POWER_HOST_LPAR_ALLOCATION, (dc_wc, start_ts, end_ts)
+                    )
+        except OperationalError as exc:
+            logger.error("DB unavailable for get_power_host_rows(%s): %s", dc_code, exc)
+            return finalize_host_payload({"hosts": [], "host_count": 0})
+
+        alloc_map = {
+            str(r[0] or "").strip(): {
+                "lpar_count": int(r[1] or 0),
+                "cpu_alloc_cores": float(r[2] or 0) * POWER_CORES_PER_PROCUNIT,
+                "mem_alloc_gb": float(r[3] or 0) / 1024.0,
+            }
+            for r in alloc_rows or []
+            if r and r[0]
+        }
+
+        hosts = []
+        for r in frame_rows or []:
+            frame = str(r[0] or "").strip()
+            if not frame:
+                continue
+            hosts.append(
+                self._power_host_row_payload(
+                    frame=frame,
+                    cpu_cap_cores=float(r[1] or 0) * POWER_CORES_PER_PROCUNIT,
+                    cpu_used_cores=float(r[2] or 0) * POWER_CORES_PER_PROCUNIT,
+                    mem_cap_gb=float(r[3] or 0) / 1024.0,
+                    mem_available_gb=float(r[4] or 0) / 1024.0,
+                    alloc=alloc_map.get(frame),
+                )
+            )
+        hosts.sort(key=lambda h: h["host"])
+        return finalize_host_payload({"hosts": hosts, "host_count": len(hosts)})
+
+    @staticmethod
+    def _power_host_row_payload(
+        *,
+        frame: str,
+        cpu_cap_cores: float,
+        cpu_used_cores: float,
+        mem_cap_gb: float,
+        mem_available_gb: float,
+        alloc: dict | None,
+    ) -> dict:
+        """Normalize one Power frame into the shared host-row shape.
+
+        Deliberate choices, because a frame is not a hypervisor host:
+
+        * ``cpu_cap_ghz`` / ``cpu_alloc_ghz`` carry **cores**, not GHz. The
+          sellable engine reads these raw fields as the CPU axis and the
+          virt_power ratio is expressed in cores, so converting to GHz here
+          would inflate the axis by ghz_per_core. ``ghz_per_core`` is therefore
+          1.0 and the physical CPU track equals the sales track.
+        * ``mem_used_gb`` is total - available, the frame's real memory
+          commitment including the firmware/hypervisor reserve, while
+          ``mem_alloc_gb`` is the LPAR roll-up. The first gates the frame, the
+          second sizes its headroom; the reserve sits between them (~2%).
+        * The HMC exposes one sample per frame, not a window, so the peak track
+          is set equal to the latest sample rather than left absent -- an absent
+          peak would read as zero usage against a real capacity and manufacture
+          headroom. No average trio is emitted for the same reason.
+        * Storage is zero on purpose. The arrays behind these frames also serve
+          the classic ESXi estate, so free space is not attributable per frame;
+          the virt_power storage panel keeps its aggregate [min, max] range.
+          ``stor_cap_gb`` of 0 drops storage out of the per-frame min(), and
+          ``km_shared_storage`` records why.
+        """
+        alloc = alloc or {}
+        cpu_alloc_cores = float(alloc.get("cpu_alloc_cores") or 0.0)
+        mem_alloc_gb = float(alloc.get("mem_alloc_gb") or 0.0)
+        mem_used_gb = max(mem_cap_gb - mem_available_gb, 0.0)
+        cpu_used_pct = round(100.0 * cpu_used_cores / cpu_cap_cores, 1) if cpu_cap_cores > 0 else 0.0
+        mem_used_pct = round(100.0 * mem_used_gb / mem_cap_gb, 1) if mem_cap_gb > 0 else 0.0
+        return {
+            "host": frame,
+            "cluster": "",
+            "vm_count": int(alloc.get("lpar_count") or 0),
+            "cpu_cap_ghz": round(cpu_cap_cores, 2),
+            "cpu_used_ghz": round(cpu_used_cores, 2),
+            "cpu_used_ghz_peak": round(cpu_used_cores, 2),
+            "cpu_used_pct": cpu_used_pct,
+            "cpu_peak_util_pct": cpu_used_pct,
+            "cpu_alloc_ghz": round(cpu_alloc_cores, 2),
+            "cpu_alloc_ghz_physical": round(cpu_alloc_cores, 2),
+            "cpu_alloc_pct": (
+                round(100.0 * cpu_alloc_cores / cpu_cap_cores, 1) if cpu_cap_cores > 0 else 0.0
+            ),
+            "ghz_per_core": 1.0,
+            "cpu_cap_cores": round(cpu_cap_cores, 2),
+            "mem_cap_gb": round(mem_cap_gb, 2),
+            "mem_used_gb": round(mem_used_gb, 2),
+            "mem_used_gb_peak": round(mem_used_gb, 2),
+            "mem_cap_gb_at_peak": round(mem_cap_gb, 2),
+            "mem_used_pct": mem_used_pct,
+            "mem_peak_util_pct": mem_used_pct,
+            "mem_alloc_gb": round(mem_alloc_gb, 2),
+            "mem_alloc_pct": (
+                round(100.0 * mem_alloc_gb / mem_cap_gb, 1) if mem_cap_gb > 0 else 0.0
+            ),
+            "stor_cap_gb": 0.0,
+            "stor_provisioned_gb": 0.0,
+            "stor_used_gb": 0.0,
+            "stor_used_pct": 0.0,
+            "km_shared_storage": True,
+        }
+
+    def get_power_host_rows(
+        self, dc_code: str, selected_clusters: list[str] | None = None, time_range: dict | None = None
+    ) -> dict:
+        """Per-frame compute capacity/usage/allocation for IBM Power.
+
+        Source: ibm_server_general (frame capacity + utilization) and
+        ibm_lpar_general (entitled procunits / logical memory per partition).
+        Cached per dc/time like the Classic and Hyperconverged host rows.
+        ``selected_clusters`` is accepted for signature parity and ignored:
+        Power frames carry no cluster, so filtering by one would return nothing.
+        """
+        _ = selected_clusters
+        tr = time_range or default_time_range()
+        cache_key = f"power_hosts_all:{dc_code}:{tr.get('start','')}:{tr.get('end','')}"
+        cached_val = cache.get(cache_key)
+        if cached_val is None:
+            cached_val = cache.run_singleflight(
+                cache_key, lambda: self._fetch_power_host_rows_all(dc_code, tr)
+            )
+        return self._slice_host_rows_payload(cached_val, None)
+
     # ------------------------------------------------------------------
     # Unit normalization & aggregation (shared by single + batch paths)
     # ------------------------------------------------------------------
@@ -2172,9 +2736,13 @@ LIMIT 20
                 "vios": int(power_vios or 0),
                 "lpar_count": int(power_lpar_count or 0),
                 "cpu_total_procunits": round(float(power_cpu[0] or 0), 2),
-                "cpu_total_cores": round(float(power_cpu[0] or 0) * 8.0, 2),
+                "cpu_total_cores": round(
+                    float(power_cpu[0] or 0) * POWER_CORES_PER_PROCUNIT, 2
+                ),
                 "cpu_available_procunits": round(float(power_cpu[1] or 0), 2),
-                "cpu_available_cores": round(float(power_cpu[1] or 0) * 8.0, 2),
+                "cpu_available_cores": round(
+                    float(power_cpu[1] or 0) * POWER_CORES_PER_PROCUNIT, 2
+                ),
                 "cpu_used": round(float(power_cpu[2] or 0), 2),
                 "cpu_assigned": round(float(power_cpu[3] or 0), 2),
                 "memory_total": round(float(power_mem[0] or 0) / 1024.0, 2),
@@ -5017,7 +5585,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
         with self._get_connection() as conn:
             with conn.cursor() as cur:
                 agg_rows = self._run_rows(cur, bq.VEEAM_SESSION_JOB_STATS, (gran, start_ts, end_ts))
-                seed_rows = self._run_rows(cur, bq.VEEAM_IP_TO_DC_SEED, (start_ts, end_ts))
+                seed_rows = self._run_rows(cur, bq.VEEAM_IP_TO_DC_SEED)
 
         ip_to_dc = self._build_ip_to_dc_map(seed_rows or [], ip_index=0, label_index=1)
 
@@ -5393,7 +5961,7 @@ JOIN latest l ON s.storage_ip = l.storage_ip AND s."timestamp" = l.max_ts
             with conn.cursor() as cur:
                 if vendor == "veeam":
                     raw = self._run_rows(cur, bq.VEEAM_UNIQUE_JOBS_LATEST, (start_ts, end_ts))
-                    seed_rows = self._run_rows(cur, bq.VEEAM_IP_TO_DC_SEED, (start_ts, end_ts))
+                    seed_rows = self._run_rows(cur, bq.VEEAM_IP_TO_DC_SEED)
                     ip_to_dc = self._build_ip_to_dc_map(seed_rows or [], ip_index=0, label_index=1)
                     for r in raw or []:
                         mapped = self._map_veeam_unique_row(r)

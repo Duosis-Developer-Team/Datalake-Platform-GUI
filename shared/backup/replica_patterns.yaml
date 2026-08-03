@@ -1,29 +1,30 @@
 # Global DR / replica VM name patterns.
-# Seed for Administration → Platform → Backup Mapping (Veeam / Zerto separators).
+# Seed for Administration → Platform → Backup Mapping.
 #
-# Classification order (same as CRM-Inventory-Infra-Matching):
-#   1) silinecek exclude  → internal / silinecek report (not billable, not replica)
-#   2) DR / replica patterns → backup / replication resource pool
-#   3) remainder → billable virtualization
+# Classification order:
+#   1) silinecek exclude
+#   2) veeam_dr patterns  → Veeam DR / replication (default: _DR, _DRC, embedded -dr-)
+#   3) altra_replica patterns → external Altra / Cloud Connect style replicas
+#      (default: _replica, _replika, contains replica/replika)
+#   4) custom patterns → non-standard operator additions (e.g. ALT-TRA-DER)
+#   5) remainder → billable virtualization
 #
-# Operators may later override these via Platform Backup Mapping UI / webui DB;
+# Zerto VMs are identified from raw_zerto_vm_metrics (not name patterns).
+# Operators may later override via Platform Backup Mapping UI / webui DB;
 # this YAML remains the default seed when no override is loaded.
 #
-# Match methods align with gui_crm_customer_source_mapping style:
-#   suffix | contains | regex (future)
+# Match methods: suffix | contains | prefix | exact
 
-version: 1
+version: 2
 
-# Step 1 — exclude before replica classification (case-insensitive contains).
 silinecek:
   - id: silinecek_contains
     match: contains
     value: silinecek
     case_insensitive: true
 
-# Step 2 — DR / replica pool (any match → replica bucket).
-replica_patterns:
-  # Suffixes (case-insensitive)
+# Veeam DR defaults (_dr → Veeam replication).
+veeam_dr_patterns:
   - id: suffix_dr
     match: suffix
     value: _DR
@@ -32,16 +33,6 @@ replica_patterns:
     match: suffix
     value: _DRC
     case_insensitive: true
-  - id: suffix_replica
-    match: suffix
-    value: _replica
-    case_insensitive: true
-  - id: suffix_replika
-    match: suffix
-    value: _replika
-    case_insensitive: true
-
-  # Embedded -dr- / _dr_ (also -dr_ / _dr- via classifier regex)
   - id: embedded_dr_hyphen
     match: contains
     value: "-dr-"
@@ -51,7 +42,16 @@ replica_patterns:
     value: "_dr_"
     case_insensitive: true
 
-  # Broad contains (covers residual replica/replika tokens)
+# Altra / external replica defaults (not in our estate; Cloud Connect style).
+altra_replica_patterns:
+  - id: suffix_replica
+    match: suffix
+    value: _replica
+    case_insensitive: true
+  - id: suffix_replika
+    match: suffix
+    value: _replika
+    case_insensitive: true
   - id: contains_replica
     match: contains
     value: replica
@@ -61,11 +61,26 @@ replica_patterns:
     value: replika
     case_insensitive: true
 
-# Documentary: vendor counter reconciliation targets (Platform separators).
+# Non-standard operator patterns (empty seed; add via Backup Mapping later).
+custom_patterns: []
+
+# Documentary: vendor counter reconciliation targets.
 vendor_reconciliation:
   veeam:
-    description: Compare replica pool size to SUM(objects_count) for type=VSphereReplica
+    description: >
+      Compare veeam_dr name-pool size to SUM(objects_count) for Replica
+      session/job types (session_type primary, jobs.type fallback).
     metric: objects_count
+    bucket: veeam_dr
   zerto:
-    description: Compare replica pool size to SUM(vmscount) across VPGs
+    description: >
+      Zerto VMs come from raw_zerto_vm_metrics / VPG matrix — not name patterns.
+      Reconciliation uses SUM(vmscount) across VPGs.
     metric: vmscount
+    bucket: zerto
+  altra:
+    description: >
+      Altra / external replicas are name-classified only; CRM service mapping
+      is deferred. No vendor counter yet.
+    metric: name_count
+    bucket: altra_replica

@@ -72,7 +72,7 @@ def apply_customer_backup_category(store_val):
     prevent_initial_call=True,
 )
 def deeplink_summary_to_backup(n_clicks_list):
-    """Summary Backup KPI control → Backup tab + Image/Application/Replication category."""
+    """Summary Backup KPI control → Backup tab + Image/Application/Veeam/Zerto category."""
     if not n_clicks_list or not any(n_clicks_list):
         raise PreventUpdate
     trig = ctx.triggered_id
@@ -81,7 +81,9 @@ def deeplink_summary_to_backup(n_clicks_list):
     if not ctx.triggered or not ctx.triggered[0].get("value"):
         raise PreventUpdate
     category = str(trig.get("category") or "image").strip().lower() or "image"
-    if category not in ("image", "application", "replication"):
+    if category == "replication":
+        category = "veeam"
+    if category not in ("image", "application", "veeam", "zerto"):
         category = "image"
     return "backup", "backup", category
 

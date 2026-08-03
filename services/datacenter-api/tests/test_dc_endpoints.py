@@ -173,8 +173,8 @@ def test_backup_replication_compute_endpoint_delegates_classic_capacity(client, 
         "cpu_alloc_ghz_sales": 50.0,
         "mem_cap": 512.0,
         "mem_alloc_gb_vm": 256.0,
-        "stor_cap": 20.0,
-        "stor_provisioned_gb": 10240.0,
+        "stor_cap": 0.0,
+        "stor_provisioned_gb": 0.0,
     }
     mock_db.get_backup_replication_compute.return_value = expected
 
@@ -186,6 +186,25 @@ def test_backup_replication_compute_endpoint_delegates_classic_capacity(client, 
     assert args[0] == "DC11"
     assert args[1] == ["KM-1", "KM-2"]
     assert args[2]["preset"] == "7d"
+
+
+def test_backup_veeam_storage_compute_endpoint(client, mock_db):
+    expected = {
+        "stor_cap": 3.0,
+        "stor_provisioned_gb": 1536.0,
+        "stor_pct": 50.0,
+        "datastore_count": 2,
+        "source": "vmware_datastore_veeam",
+    }
+    mock_db.get_veeam_replication_datastore_compute.return_value = expected
+
+    r = client.get("/api/v1/datacenters/DC13/compute/backup-veeam-storage")
+
+    assert r.status_code == 200
+    assert r.json() == expected
+    mock_db.get_veeam_replication_datastore_compute.assert_called_once()
+    args = mock_db.get_veeam_replication_datastore_compute.call_args[0]
+    assert args[0] == "DC13"
 
 
 def test_backup_nutanix_compute_endpoint_delegates_hyperconv_capacity(client, mock_db):

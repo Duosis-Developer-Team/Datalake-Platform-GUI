@@ -456,6 +456,30 @@ FROM latest
 GROUP BY host_name
 """
 
+# Per-VM disk rows for HC Nutanix intersection (Veeam/Zerto replication).
+# Params: (dc_code, start_ts, end_ts, start_ts, end_ts)
+# Returns: (vm_name, disk_gb)
+NUTANIX_VM_DISK_ROWS = """
+WITH dc_clusters AS (
+    SELECT DISTINCT cluster_uuid::text AS cluster_uuid
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name LIKE ('%%' || %s || '%%')
+      AND collection_time BETWEEN %s AND %s
+),
+latest AS (
+    SELECT DISTINCT ON (vm_name)
+        vm_name,
+        COALESCE(disk_capacity / 1073741824.0, 0) AS disk_gb
+    FROM public.nutanix_vm_metrics
+    WHERE cluster_uuid::text IN (SELECT cluster_uuid FROM dc_clusters)
+      AND collection_time BETWEEN %s AND %s
+    ORDER BY vm_name, collection_time DESC
+)
+SELECT vm_name, disk_gb
+FROM latest
+WHERE vm_name IS NOT NULL AND TRIM(vm_name) <> ''
+"""
+
 NUTANIX_VM_STORAGE = """
 WITH dc_clusters AS (
     SELECT DISTINCT cluster_uuid::text AS cluster_uuid
@@ -530,6 +554,31 @@ SELECT
     COALESCE(memory_capacity / 1073741824.0, 0),
     COALESCE(disk_capacity / 1073741824.0, 0),
     COALESCE(used_storage / 1073741824.0, 0)
+FROM latest
+"""
+
+# Named Nutanix VM allocation for replica exclusion (HC compute SoT).
+# Params: (dc_code, start_ts, end_ts, start_ts, end_ts)
+# Returns: (vm_name, cpu_count, memory_gb)
+NUTANIX_VM_ALLOCATION_NAMED = """
+WITH dc_clusters AS (
+    SELECT DISTINCT cluster_uuid::text AS cluster_uuid
+    FROM public.nutanix_cluster_metrics
+    WHERE cluster_name LIKE ('%%' || %s || '%%')
+      AND collection_time BETWEEN %s AND %s
+),
+latest AS (
+    SELECT DISTINCT ON (vm_name)
+        vm_name, cpu_count, memory_capacity
+    FROM public.nutanix_vm_metrics
+    WHERE cluster_uuid::text IN (SELECT cluster_uuid FROM dc_clusters)
+      AND collection_time BETWEEN %s AND %s
+    ORDER BY vm_name, collection_time DESC
+)
+SELECT
+    vm_name,
+    COALESCE(cpu_count, 0)::int,
+    COALESCE(memory_capacity / 1073741824.0, 0)
 FROM latest
 """
 

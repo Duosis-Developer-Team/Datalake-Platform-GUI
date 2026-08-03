@@ -27,16 +27,60 @@ from shared.sellable.computation import (
     apply_utilization_gate,
     compute_potential_tl,
 )
-from shared.sellable.models import PanelResult
+from shared.sellable.models import PanelResult, ResourceRatio
 
 logger = logging.getLogger(__name__)
 
-_INVENTORY_CACHE_TTL_SEC = float(os.getenv("INVENTORY_OVERVIEW_CACHE_TTL", "600") or "600")
+# TTL ≥ 4× scheduler refresh (15m) — CACHE_STRATEGY §4a / TASK-01.
+_INVENTORY_CACHE_TTL_SEC = float(os.getenv("INVENTORY_OVERVIEW_CACHE_TTL", "3600") or "3600")
 _INVENTORY_REDIS_PREFIX = "crm:inventory_overview:"
+_INVENTORY_LAST_GOOD_SUFFIX = ":last_good"
+_INVENTORY_LOCK_SUFFIX = ":lock"
+_INVENTORY_LOCK_TTL_SEC = int(os.getenv("INVENTORY_OVERVIEW_LOCK_TTL", "300") or "300")
 _INVENTORY_DC_PARALLELISM = max(1, int(os.getenv("INVENTORY_DC_PARALLELISM", "4") or "4"))
 
-_HOST_DUAL_FAMILIES: frozenset[str] = frozenset({"virt_classic", "virt_hyperconverged"})
+# Dual-track sellable profile (allocation / max util / avg util) for inventory UI.
+_HOST_DUAL_PROFILE_FAMILIES: frozenset[str] = frozenset({
+    "virt_classic",
+    "virt_hyperconverged",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
+    "backup_veeam_replication",
+    "backup_zerto_replication",
+})
+# Global inventory: recompute these via host-based multi-DC path (not Σ DC aggregates).
+_HOST_DUAL_FAMILIES: frozenset[str] = frozenset({
+    "virt_classic",
+    "virt_hyperconverged",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
+})
 _ALLOC_ONLY_FAMILIES: frozenset[str] = frozenset({"virt_power", "virt_power_hana"})
+_REPLICATION_ALLOCATION_FAMILIES: frozenset[str] = frozenset({
+    "backup_veeam_replication",
+    "backup_zerto_replication",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
+})
+# Inventory surfaces Resource Ratios + Compute/Storage coupling for Classic/HC.
+_REPLICATION_RATIO_SURFACE_FAMILIES: frozenset[str] = frozenset({
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
+})
+_REPLICATION_RATIO_SHORT_LABELS: dict[str, str] = {
+    "backup_veeam_replication_classic": "Veeam Classic",
+    "backup_zerto_replication_classic": "Zerto Classic",
+    "backup_veeam_replication_hyperconverged": "Veeam HC",
+    "backup_zerto_replication_hyperconverged": "Zerto HC",
+}
 _INVENTORY_VIRT_FAMILIES: frozenset[str] = frozenset({
     "virt_classic",
     "virt_hyperconverged",
@@ -73,8 +117,14 @@ _INVENTORY_CRM_VISIBLE_FAMILIES: frozenset[str] = frozenset({
     "backup_netbackup",
     "backup_veeam_replication",
     "backup_zerto_replication",
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
     "backup_image",
     "backup_remote",
+    "backup_offsite",
+    "backup_replication",
 })
 
 _NETBACKUP_INVENTORY_PANEL_KEYS: frozenset[str] = frozenset({
@@ -82,6 +132,238 @@ _NETBACKUP_INVENTORY_PANEL_KEYS: frozenset[str] = frozenset({
     "backup_netbackup_application",
     "backup_netbackup_storage",
 })
+
+# Top-level CRM Inventory accordion groups (ADR-0025 / backup IA).
+_INVENTORY_GROUP_IMAGE = "image_backup"
+_INVENTORY_GROUP_APPLICATION = "application_backup"
+_INVENTORY_GROUP_REPLICATION = "replication"
+_INVENTORY_GROUP_LABELS: dict[str, str] = {
+    _INVENTORY_GROUP_IMAGE: "Image Backup",
+    _INVENTORY_GROUP_APPLICATION: "Application Backup",
+    _INVENTORY_GROUP_REPLICATION: "Replication",
+}
+_INVENTORY_GROUP_ORDER: tuple[str, ...] = (
+    _INVENTORY_GROUP_IMAGE,
+    _INVENTORY_GROUP_APPLICATION,
+    _INVENTORY_GROUP_REPLICATION,
+)
+
+# Panel / family → inventory accordion group (backup & replication only).
+_PANEL_INVENTORY_GROUP: dict[str, str] = {
+    "backup_netbackup_image": _INVENTORY_GROUP_IMAGE,
+    "backup_image_hyperconverged": _INVENTORY_GROUP_IMAGE,
+    "backup_remote_nutanix": _INVENTORY_GROUP_IMAGE,
+    "backup_offsite_veeam": _INVENTORY_GROUP_IMAGE,
+    "backup_offsite_s3": _INVENTORY_GROUP_IMAGE,
+    "backup_veeam_image": _INVENTORY_GROUP_IMAGE,
+    "backup_netbackup_application": _INVENTORY_GROUP_APPLICATION,
+    "backup_netbackup_storage": _INVENTORY_GROUP_IMAGE,
+}
+_FAMILY_INVENTORY_GROUP: dict[str, str] = {
+    "backup_image": _INVENTORY_GROUP_IMAGE,
+    "backup_nutanix": _INVENTORY_GROUP_IMAGE,
+    "backup_remote": _INVENTORY_GROUP_IMAGE,
+    "backup_offsite": _INVENTORY_GROUP_IMAGE,
+    "backup_veeam": _INVENTORY_GROUP_IMAGE,
+    "backup_netbackup": _INVENTORY_GROUP_IMAGE,  # overridden per panel for application
+    "backup_veeam_replication": _INVENTORY_GROUP_REPLICATION,
+    "backup_zerto_replication": _INVENTORY_GROUP_REPLICATION,
+    "backup_veeam_replication_classic": _INVENTORY_GROUP_REPLICATION,
+    "backup_zerto_replication_classic": _INVENTORY_GROUP_REPLICATION,
+    "backup_veeam_replication_hyperconverged": _INVENTORY_GROUP_REPLICATION,
+    "backup_zerto_replication_hyperconverged": _INVENTORY_GROUP_REPLICATION,
+    "backup_replication": _INVENTORY_GROUP_REPLICATION,
+}
+
+# Nutanix snapshots: sold↔used comparison only (no sellable / Potential Sales).
+_COMPARISON_ONLY_FAMILIES: frozenset[str] = frozenset({
+    "backup_image",
+    "backup_nutanix",
+})
+_COMPARISON_ONLY_PANELS: frozenset[str] = frozenset({
+    "backup_image_hyperconverged",
+    "backup_remote_nutanix",
+})
+
+
+def _inventory_group_for_row(row: dict[str, Any]) -> str | None:
+    """Return Image/Application/Replication group key, or None for non-backup rows."""
+    panel_key = str(row.get("panel_key") or "")
+    if panel_key in _PANEL_INVENTORY_GROUP:
+        return _PANEL_INVENTORY_GROUP[panel_key]
+    family = str(row.get("family") or "")
+    if family == "backup_netbackup":
+        if panel_key == "backup_netbackup_application":
+            return _INVENTORY_GROUP_APPLICATION
+        return _INVENTORY_GROUP_IMAGE
+    if family in _FAMILY_INVENTORY_GROUP:
+        return _FAMILY_INVENTORY_GROUP[family]
+    if family.startswith("backup_veeam_replication") or family.startswith("backup_zerto"):
+        return _INVENTORY_GROUP_REPLICATION
+    if "DR" in str(row.get("service_label") or "") or panel_key.startswith("virt_") and "dr" in panel_key:
+        return None
+    return None
+
+
+def _is_comparison_only_row(row: dict[str, Any]) -> bool:
+    pk = str(row.get("panel_key") or "")
+    fam = str(row.get("family") or "")
+    return pk in _COMPARISON_ONLY_PANELS or fam in _COMPARISON_ONLY_FAMILIES
+
+
+def _apply_comparison_only_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """Nutanix image: hide sellable framing; keep CRM sold vs used."""
+    if not _is_comparison_only_row(row):
+        return row
+    row = dict(row)
+    row["sellable_profile"] = "comparison_only"
+    row["sellable_qty"] = None
+    row["sellable_alloc_qty"] = None
+    row["sellable_max_qty"] = None
+    row["sellable_avg_qty"] = None
+    row["potential_tl"] = 0.0
+    row["potential_tl_alloc"] = None
+    row["potential_tl_max"] = None
+    row["potential_tl_avg"] = None
+    row["free_qty"] = None
+    row["free_tl"] = None
+    row["inventory_free_mode"] = "comparison"
+    notes = list(row.get("notes") or [])
+    note = "comparison_only: Nutanix snapshots are sold↔used (no sellable headroom)"
+    if note not in notes:
+        notes.append(note)
+    row["notes"] = notes
+    return row
+
+
+def _format_resource_ratio(ratio: ResourceRatio) -> str:
+    def _n(v: float) -> str:
+        if abs(v - round(v)) < 1e-9:
+            return str(int(round(v)))
+        return f"{v:g}"
+
+    return (
+        f"{_n(float(ratio.cpu_per_unit))} : "
+        f"{_n(float(ratio.ram_gb_per_unit))} : "
+        f"{_n(float(ratio.storage_gb_per_unit))}"
+    )
+
+
+def _replication_config_fields(
+    family_key: str,
+    *,
+    dc_code: str,
+    ratio_lookup: dict[tuple[str, str], ResourceRatio],
+    coupling_mode: str | None,
+) -> dict[str, Any]:
+    """Attach active Resource Ratio + storage coupling for Classic/HC replication."""
+    if family_key not in _REPLICATION_RATIO_SURFACE_FAMILIES:
+        return {}
+    ratio = ratio_lookup.get((family_key, dc_code)) or ratio_lookup.get((family_key, "*"))
+    if ratio is None:
+        ratio = ResourceRatio(family=family_key)
+    mode = coupling_mode if coupling_mode in ("auto", "merged", "separate") else "auto"
+    return {
+        "resource_ratio": {
+            "cpu_per_unit": float(ratio.cpu_per_unit),
+            "ram_gb_per_unit": float(ratio.ram_gb_per_unit),
+            "storage_gb_per_unit": float(ratio.storage_gb_per_unit),
+        },
+        "resource_ratio_fmt": _format_resource_ratio(ratio),
+        "storage_coupling_mode": mode,
+        "resource_ratio_label": _REPLICATION_RATIO_SHORT_LABELS.get(family_key, family_key),
+    }
+
+
+def _summarize_replication_ratios(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One chip per Classic/HC family present in the Replication accordion."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        fam = str(row.get("family") or "")
+        if fam not in _REPLICATION_RATIO_SURFACE_FAMILIES or fam in seen:
+            continue
+        if not row.get("resource_ratio_fmt"):
+            continue
+        seen.add(fam)
+        out.append({
+            "family": fam,
+            "label": row.get("resource_ratio_label") or _REPLICATION_RATIO_SHORT_LABELS.get(fam, fam),
+            "resource_ratio_fmt": row.get("resource_ratio_fmt"),
+            "storage_coupling_mode": row.get("storage_coupling_mode") or "auto",
+        })
+    return out
+
+
+def _regroup_backup_families(families_out: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse backup panel families into Image | Application | Replication."""
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    passthrough: list[dict[str, Any]] = []
+    for fam in families_out:
+        panels = fam.get("panels") or []
+        if not panels:
+            continue
+        # If any panel maps to a backup inventory group, regroup those panels.
+        backup_panels = []
+        other_panels = []
+        for row in panels:
+            g = _inventory_group_for_row(row)
+            if g:
+                backup_panels.append((g, row))
+            else:
+                other_panels.append(row)
+        for g, row in backup_panels:
+            grouped[g].append(row)
+        if other_panels:
+            passthrough.append({
+                **fam,
+                "panels": other_panels,
+                "panel_count": len(other_panels),
+            })
+        elif not backup_panels:
+            passthrough.append(fam)
+
+    rebuilt: list[dict[str, Any]] = []
+    for gkey in _INVENTORY_GROUP_ORDER:
+        rows = grouped.get(gkey) or []
+        # Hide empty Offsite/Remote when no sold and no infra
+        rows = [
+            r for r in rows
+            if not (
+                str(r.get("panel_key") or "") in (
+                    "backup_remote_nutanix",
+                    "backup_offsite_veeam",
+                    "backup_offsite_s3",
+                )
+                and float(r.get("crm_sold_qty") or 0) <= 0
+                and not r.get("has_infra_source")
+            )
+        ]
+        if not rows:
+            continue
+        label = _INVENTORY_GROUP_LABELS[gkey]
+        rows_sorted = sorted(rows, key=lambda r: r.get("service_label") or "")
+        entry: dict[str, Any] = {
+            "family": gkey,
+            "label": label,
+            "family_label": label,
+            "dc_code": rows_sorted[0].get("dc_code") or "*",
+            "panels": rows_sorted,
+            "panel_count": len(rows_sorted),
+            "has_infra": any(r.get("has_infra_source") for r in rows_sorted),
+            "sellable_profile": (
+                "comparison_only"
+                if gkey == _INVENTORY_GROUP_IMAGE
+                and all(_is_comparison_only_row(r) for r in rows_sorted)
+                else "standard"
+            ),
+        }
+        if gkey == _INVENTORY_GROUP_REPLICATION:
+            entry["resource_ratio_summary"] = _summarize_replication_ratios(rows_sorted)
+        rebuilt.append(entry)
+    # Keep non-backup families (virt, S3, …) after backup groups
+    passthrough.sort(key=lambda f: (f.get("family_label") or f.get("family") or "").lower())
+    return rebuilt + passthrough
 
 # Families rendered nowhere on /crm/inventory-overview. virt_power shares the
 # same IBM Power infrastructure as virt_power_hana (see sellable_service:261),
@@ -160,9 +442,56 @@ def _value_tl_from_catalog_price(
     return compute_potential_tl(float(qty), price)
 
 
+def _netbackup_job_metrics_for_panel(
+    metrics: dict[str, Any],
+    panel_key: str,
+) -> dict[str, float]:
+    """Pick Image/Application job slice; Total/Free stay on shared pool fields."""
+    by_cat = metrics.get("by_category") if isinstance(metrics, dict) else None
+    category: str | None = None
+    if panel_key == "backup_netbackup_image":
+        category = "image"
+    elif panel_key == "backup_netbackup_application":
+        category = "application"
+    slice_m: dict[str, Any] = {}
+    if category and isinstance(by_cat, dict):
+        raw = by_cat.get(category)
+        if isinstance(raw, dict):
+            slice_m = raw
+    return {
+        "pre_dedup_bytes": float(
+            slice_m.get("pre_dedup_bytes", metrics.get("pre_dedup_bytes", 0.0)) or 0.0
+        ),
+        "used_post_dedup_bytes": float(
+            slice_m.get(
+                "used_post_dedup_bytes",
+                metrics.get("used_post_dedup_bytes", 0.0),
+            )
+            or 0.0
+        ),
+        "dedup_savings_bytes": float(
+            slice_m.get(
+                "dedup_savings_bytes",
+                metrics.get("dedup_savings_bytes", 0.0),
+            )
+            or 0.0
+        ),
+        "dedup_savings_pct": float(
+            slice_m.get(
+                "dedup_savings_pct",
+                metrics.get("dedup_savings_pct", 0.0),
+            )
+            or 0.0
+        ),
+        "dedup_factor": float(
+            slice_m.get("dedup_factor", metrics.get("dedup_factor", 0.0)) or 0.0
+        ),
+    }
+
+
 def _apply_netbackup_inventory_fields(
     row: dict[str, Any],
-    metrics: dict[str, float],
+    metrics: dict[str, Any],
     *,
     under_pct: float = 80.0,
     over_pct: float = 110.0,
@@ -170,29 +499,57 @@ def _apply_netbackup_inventory_fields(
     """Enrich NetBackup row with dual-basis used (PreDedup) and PostDedup cost.
 
     K-01: customer billable ``used_qty`` = PreDedup; PostDedup is cost-only.
+    Total/Free/pool used = shared disk pool; Transfer/Post = Image or App jobs.
     """
     if not row.get("has_infra_source"):
         return row
     row = dict(row)
     has_price = bool(row.get("has_price"))
     unit_price = row.get("unit_price_tl")
-    pre = _bytes_to_tb(metrics.get("pre_dedup_bytes", 0.0))
-    post = _bytes_to_tb(metrics.get("used_post_dedup_bytes", 0.0))
+    panel_key = str(row.get("panel_key") or "")
+    job_m = _netbackup_job_metrics_for_panel(metrics, panel_key)
+    pre = _bytes_to_tb(job_m.get("pre_dedup_bytes", 0.0))
+    post = _bytes_to_tb(job_m.get("used_post_dedup_bytes", 0.0))
     if post <= 0.0 and row.get("used_qty") is not None:
         try:
             post = float(row.get("used_qty") or 0.0)
         except (TypeError, ValueError):
             post = 0.0
 
+    pool_used = _bytes_to_tb(metrics.get("used_pool_bytes", 0.0))
+    total_qty = row.get("total")
+    try:
+        total_f = float(total_qty) if total_qty is not None else None
+    except (TypeError, ValueError):
+        total_f = None
+    crm_sold = float(row.get("crm_sold_qty") or 0.0)
     row["inventory_free_mode"] = "physical"
     row["free_qty"] = _bytes_to_tb(metrics.get("available_bytes", 0.0))
+    row["unsold_qty"] = (
+        max(total_f - crm_sold, 0.0) if total_f is not None else None
+    )
+    row["pool_used_qty"] = pool_used
     row["pre_dedup_qty"] = pre
     row["post_dedup_qty"] = post
-    row["dedup_savings_qty"] = _bytes_to_tb(metrics.get("dedup_savings_bytes", 0.0))
-    row["dedup_savings_pct"] = float(metrics.get("dedup_savings_pct") or 0.0)
-    row["dedup_factor"] = float(metrics.get("dedup_factor") or 0.0)
+    row["dedup_savings_qty"] = _bytes_to_tb(job_m.get("dedup_savings_bytes", 0.0))
+    row["dedup_savings_pct"] = float(job_m.get("dedup_savings_pct") or 0.0)
+    row["dedup_factor"] = float(job_m.get("dedup_factor") or 0.0)
+    cat_label = (
+        "image" if panel_key == "backup_netbackup_image"
+        else "app" if panel_key == "backup_netbackup_application"
+        else "jobs"
+    )
+    # Pool used + category PostDedup live under Used (not Total).
+    row["used_compare_note"] = (
+        f"Pool used: {pool_used:,.1f} TB · {cat_label} PostDedup: {post:,.1f} TB"
+    )
     row["free_tl"] = _value_tl_from_catalog_price(
         row.get("free_qty"),
+        unit_price_tl=unit_price,
+        has_price=has_price,
+    )
+    row["unsold_tl"] = _value_tl_from_catalog_price(
+        row.get("unsold_qty"),
         unit_price_tl=unit_price,
         has_price=has_price,
     )
@@ -229,6 +586,18 @@ def _apply_netbackup_inventory_fields(
             under_pct=under_pct,
             over_pct=over_pct,
         )
+
+    # PreDedup enrichment overwrites used via bytes→TB helpers; clear stale
+    # KiB→TB conversion false positives from sellable metadata mismatch.
+    notes = [
+        n for n in (row.get("notes") or [])
+        if "unit_conversion_missing" not in (n or "")
+    ]
+    row["notes"] = notes
+    if row.get("suspect_reason") == "unit_conversion_missing":
+        row["suspect_reason"] = None
+        if row.get("data_quality") == "suspect":
+            row["data_quality"] = None
     return row
 
 
@@ -517,6 +886,8 @@ def _assess_data_quality(
     if panel.panel_key in LICENCE_OS_PANEL_FAMILIES:
         return None, None
     if panel.family not in _INVENTORY_VIRT_FAMILIES and allocated > total > 0:
+        if panel.family in _REPLICATION_ALLOCATION_FAMILIES:
+            return "suspect", "allocation_exceeds_total"
         return "suspect", "used_exceeds_total"
     if crm > total > 0 and panel.family not in _INVENTORY_VIRT_FAMILIES:
         return "suspect", "crm_exceeds_total"
@@ -535,7 +906,7 @@ def _assess_data_quality(
 
 def _family_sellable_profile(family_key: str) -> str:
     """Column profile for inventory report sellable tracks."""
-    if family_key in _HOST_DUAL_FAMILIES:
+    if family_key in _HOST_DUAL_PROFILE_FAMILIES:
         return "dual_track"
     if family_key in _ALLOC_ONLY_FAMILIES:
         return "allocation_only"
@@ -548,7 +919,7 @@ def _sellable_track_fields(
     has_infra: bool,
     hide_used: bool = False,
 ) -> dict[str, Any]:
-    """Dual-track sellable quantities and TL for virtualization families."""
+    """Dual-track sellable quantities and TL for virtualization / replication families."""
     if not has_infra:
         return {
             "unit_price_tl": None,
@@ -560,6 +931,8 @@ def _sellable_track_fields(
             "potential_tl_alloc": None,
             "potential_tl_max": None,
             "potential_tl_avg": None,
+            "sellable_tl_min": None,
+            "sellable_tl_max": None,
         }
     unit_price = float(panel.unit_price_tl or 0.0)
     used = float(panel.allocated or 0.0)
@@ -570,10 +943,36 @@ def _sellable_track_fields(
     if max_qty is None and panel.resource_kind == "ram" and panel.sellable_effective is not None:
         max_qty = panel.sellable_effective
     avg_qty = panel.sellable_avg_util
-    potential_tl_alloc = panel.potential_tl_min
-    if potential_tl_alloc is None and panel.potential_tl is not None:
-        potential_tl_alloc = panel.potential_tl
-    potential_tl_max = panel.potential_tl_max
+    # Replication storage has no host dual tracks — surface constrained as the triad
+    # (including 0.0 so the UI shows 0, not em-dash).
+    if (
+        panel.family in _REPLICATION_ALLOCATION_FAMILIES
+        and (panel.resource_kind or "").lower() == "storage"
+    ):
+        constrained = panel.sellable_constrained
+        if constrained is None and panel.sellable_effective is not None:
+            constrained = panel.sellable_effective
+        if constrained is not None:
+            constrained_f = float(constrained)
+            if alloc_qty is None:
+                alloc_qty = constrained_f
+            if max_qty is None:
+                max_qty = constrained_f
+            if avg_qty is None:
+                avg_qty = constrained_f
+    # Replication: triad TL = qty × price (not IBM alternate min/max from Potential Sales).
+    if panel.family in _REPLICATION_ALLOCATION_FAMILIES and panel.has_price:
+        potential_tl_alloc = (
+            compute_potential_tl(alloc_qty, unit_price) if alloc_qty is not None else None
+        )
+        potential_tl_max = (
+            compute_potential_tl(max_qty, unit_price) if max_qty is not None else None
+        )
+    else:
+        potential_tl_alloc = panel.potential_tl_min
+        if potential_tl_alloc is None and panel.potential_tl is not None:
+            potential_tl_alloc = panel.potential_tl
+        potential_tl_max = panel.potential_tl_max
     potential_tl_avg = (
         compute_potential_tl(avg_qty, unit_price)
         if avg_qty is not None and panel.has_price
@@ -582,6 +981,12 @@ def _sellable_track_fields(
     used_tl = None
     if not hide_used and panel.has_price:
         used_tl = compute_potential_tl(used, unit_price)
+    # Row-level sellable TL bounds for inventory header interval aggregation.
+    track_tls = [
+        v for v in (potential_tl_alloc, potential_tl_max, potential_tl_avg) if v is not None
+    ]
+    sellable_tl_min = min(track_tls) if track_tls else None
+    sellable_tl_max = max(track_tls) if track_tls else None
     return {
         "unit_price_tl": unit_price if panel.has_price else None,
         "used_tl": used_tl,
@@ -592,6 +997,8 @@ def _sellable_track_fields(
         "potential_tl_alloc": potential_tl_alloc,
         "potential_tl_max": potential_tl_max,
         "potential_tl_avg": potential_tl_avg,
+        "sellable_tl_min": sellable_tl_min,
+        "sellable_tl_max": sellable_tl_max,
     }
 
 
@@ -827,6 +1234,7 @@ class InventoryOverviewService:
                 dc_code="*",
                 family=fam,
                 force_recompute=force_recompute,
+                infra_dc_codes=dc_codes,
             ):
                 if panel.has_infra_source:
                     merged[panel.panel_key] = panel
@@ -952,6 +1360,9 @@ class InventoryOverviewService:
         service_pages: dict[str, dict[str, Any]],
         under_pct: float,
         over_pct: float,
+        dc_code: str = "*",
+        ratio_lookup: dict[tuple[str, str], ResourceRatio] | None = None,
+        coupling_lookup: dict[tuple[str, str, str, str], str] | None = None,
     ) -> dict[str, Any]:
         crm_sold = float((entitled or {}).get("entitled_qty") or 0.0)
         crm_sold_tl = float((entitled or {}).get("entitled_amount_tl") or 0.0)
@@ -966,13 +1377,21 @@ class InventoryOverviewService:
             service_pages=service_pages,
         )
         hide_used = family_key in _INVENTORY_VIRT_FAMILIES
+        used_is_allocation = family_key in _REPLICATION_ALLOCATION_FAMILIES
+        # Free = infra empty (Total − allocated). Unsold = Total − CRM Sold.
+        infra_used = used if panel.has_infra_source else None
+        free_out = (
+            max(float(total or 0) - float(infra_used or 0), 0.0)
+            if panel.has_infra_source and total is not None
+            else None
+        )
+        unsold_out = (
+            max(float(total or 0) - crm_sold, 0.0)
+            if panel.has_infra_source and total is not None
+            else None
+        )
         if hide_used:
             used_out = None
-            free_out = (
-                max(float(total or 0) - crm_sold, 0.0)
-                if panel.has_infra_source and total is not None
-                else None
-            )
             status = panel_inventory_status_virt(
                 crm_sold_qty=crm_sold,
                 total_qty=total,
@@ -989,11 +1408,6 @@ class InventoryOverviewService:
             )
         else:
             used_out = used if panel.has_infra_source else None
-            free_out = (
-                max(float(total or 0) - used, 0.0)
-                if panel.has_infra_source and total is not None
-                else None
-            )
             status = panel_inventory_status(
                 crm_sold_qty=crm_sold,
                 used_qty=used if panel.has_infra_source else 0.0,
@@ -1023,19 +1437,28 @@ class InventoryOverviewService:
                 if key in entitled:
                     crm_fields[key] = entitled[key]
         data_quality, suspect_reason = _assess_data_quality(panel, crm_sold=crm_sold)
+        # Free is always infra empty; Unsold is commercial residual.
         inventory_free_mode = (
-            "physical" if family_key in _PHYSICAL_FREE_FAMILIES else "standard"
+            "physical" if family_key in _PHYSICAL_FREE_FAMILIES else "infra"
         )
         track_fields = _sellable_track_fields(
             panel, has_infra=panel.has_infra_source, hide_used=hide_used,
         )
         free_tl_out = None
-        if inventory_free_mode == "physical" and panel.has_infra_source:
-            free_tl_out = _value_tl_from_catalog_price(
-                free_out,
-                unit_price_tl=panel.unit_price_tl,
-                has_price=panel.has_price,
-            )
+        unsold_tl_out = None
+        if panel.has_infra_source and panel.has_price:
+            if inventory_free_mode == "physical":
+                free_tl_out = _value_tl_from_catalog_price(
+                    free_out,
+                    unit_price_tl=panel.unit_price_tl,
+                    has_price=panel.has_price,
+                )
+            else:
+                free_tl_out = compute_potential_tl(free_out, panel.unit_price_tl)
+            unsold_tl_out = compute_potential_tl(unsold_out, panel.unit_price_tl)
+        # Surface IBM-style alternate min/max on replication rows.
+        sellable_min = panel.sellable_min if used_is_allocation else None
+        sellable_max = panel.sellable_max if used_is_allocation else None
         base = {
             "panel_key": panel.panel_key,
             "label": service_label,
@@ -1046,9 +1469,14 @@ class InventoryOverviewService:
             "crm_sold_qty": crm_sold,
             "crm_sold_tl": crm_sold_tl,
             "used_qty": used_out,
+            "used_is_allocation": used_is_allocation,
             "sellable_qty": sellable_out,
+            "sellable_min_qty": sellable_min,
+            "sellable_max_qty": sellable_max,
             "free_qty": free_out,
             "free_tl": free_tl_out,
+            "unsold_qty": unsold_out,
+            "unsold_tl": unsold_tl_out,
             "potential_tl": panel.potential_tl,
             "has_infra_source": panel.has_infra_source,
             "has_price": panel.has_price,
@@ -1066,6 +1494,18 @@ class InventoryOverviewService:
             **track_fields,
             **crm_fields,
         }
+        if family_key in _REPLICATION_RATIO_SURFACE_FAMILIES:
+            mode = self._sellable.resolve_storage_coupling(
+                family_key, dc_code or "*", coupling_lookup,
+            )
+            base.update(
+                _replication_config_fields(
+                    family_key,
+                    dc_code=dc_code or "*",
+                    ratio_lookup=ratio_lookup or {},
+                    coupling_mode=mode,
+                )
+            )
         return self._enrich_row(
             base,
             service_label=service_label,
@@ -1082,6 +1522,9 @@ class InventoryOverviewService:
         *,
         panel_defs: dict[str, dict[str, Any]],
         service_pages: dict[str, dict[str, Any]],
+        dc_code: str = "*",
+        ratio_lookup: dict[tuple[str, str], ResourceRatio] | None = None,
+        coupling_lookup: dict[tuple[str, str, str, str], str] | None = None,
     ) -> dict[str, Any]:
         service_label, family_key, family_label, display_unit = self._resolve_labels(
             panel_key,
@@ -1102,6 +1545,8 @@ class InventoryOverviewService:
             "used_qty": None,
             "sellable_qty": None,
             "free_qty": None,
+            "unsold_qty": None,
+            "unsold_tl": None,
             "potential_tl": 0.0,
             "has_infra_source": False,
             "has_price": False,
@@ -1119,7 +1564,21 @@ class InventoryOverviewService:
             "potential_tl_alloc": None,
             "potential_tl_max": None,
             "potential_tl_avg": None,
+            "sellable_tl_min": None,
+            "sellable_tl_max": None,
         }
+        if family_key in _REPLICATION_RATIO_SURFACE_FAMILIES:
+            mode = self._sellable.resolve_storage_coupling(
+                family_key, dc_code or "*", coupling_lookup,
+            )
+            base.update(
+                _replication_config_fields(
+                    family_key,
+                    dc_code=dc_code or "*",
+                    ratio_lookup=ratio_lookup or {},
+                    coupling_mode=mode,
+                )
+            )
         return self._enrich_row(
             base,
             service_label=service_label,
@@ -1129,21 +1588,141 @@ class InventoryOverviewService:
             panel=None,
         )
 
+    @staticmethod
+    def _annotate_cache(payload: dict[str, Any], status: str, *, stale: bool) -> dict[str, Any]:
+        out = dict(payload)
+        out["cache_status"] = status
+        out["stale"] = bool(stale)
+        return out
+
+    def _redis_get_json(self, key: str) -> dict[str, Any] | None:
+        if self._crm_redis is None:
+            return None
+        try:
+            raw = self._crm_redis.get(key)
+            if not raw:
+                return None
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else None
+        except Exception:  # noqa: BLE001
+            logger.debug("inventory overview redis get failed key=%s", key, exc_info=True)
+            return None
+
+    def write_inventory_cache(self, dc_code: str, payload: dict[str, Any]) -> None:
+        """Write primary + last_good shadow key (TTL×2). Never deletes before write."""
+        if self._crm_redis is None:
+            return
+        cache_key = f"{_INVENTORY_REDIS_PREFIX}{dc_code or '*'}"
+        last_good_key = f"{cache_key}{_INVENTORY_LAST_GOOD_SUFFIX}"
+        ttl = max(1, int(_INVENTORY_CACHE_TTL_SEC))
+        try:
+            body = json.dumps(payload, default=str)
+            self._crm_redis.setex(cache_key, ttl, body)
+            self._crm_redis.setex(last_good_key, ttl * 2, body)
+        except Exception:  # noqa: BLE001
+            logger.debug("inventory overview cache write failed", exc_info=True)
+
+    def _try_acquire_inventory_lock(self, cache_key: str) -> bool:
+        if self._crm_redis is None:
+            return True
+        lock_key = f"{cache_key}{_INVENTORY_LOCK_SUFFIX}"
+        try:
+            return bool(
+                self._crm_redis.set(lock_key, "1", nx=True, ex=_INVENTORY_LOCK_TTL_SEC)
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("inventory lock acquire failed", exc_info=True)
+            return True
+
+    def _release_inventory_lock(self, cache_key: str) -> None:
+        if self._crm_redis is None:
+            return
+        lock_key = f"{cache_key}{_INVENTORY_LOCK_SUFFIX}"
+        try:
+            self._crm_redis.delete(lock_key)
+        except Exception:  # noqa: BLE001
+            logger.debug("inventory lock release failed", exc_info=True)
+
     def compute_inventory_overview(
         self,
         dc_code: str = "*",
         *,
         force_recompute: bool = False,
+        bypass_cache_read: bool = False,
     ) -> dict[str, Any]:
-        cache_key = f"{_INVENTORY_REDIS_PREFIX}{dc_code or '*'}"
-        if not force_recompute and self._crm_redis is not None:
-            try:
-                raw = self._crm_redis.get(cache_key)
-                if raw:
-                    return json.loads(raw)
-            except Exception:  # noqa: BLE001
-                logger.debug("inventory overview cache read failed", exc_info=True)
+        """Build inventory overview with Redis primary + last_good + single-flight.
 
+        ``force_recompute`` forces sellable recompute and bypasses cache read.
+        ``bypass_cache_read`` rebuilds from sellable tiers without forcing sellable
+        recompute (soft warm / write-through).
+        """
+        cache_key = f"{_INVENTORY_REDIS_PREFIX}{dc_code or '*'}"
+        last_good_key = f"{cache_key}{_INVENTORY_LAST_GOOD_SUFFIX}"
+        skip_read = force_recompute or bypass_cache_read
+
+        if not skip_read:
+            primary = self._redis_get_json(cache_key)
+            if primary is not None:
+                return self._annotate_cache(primary, "hit", stale=False)
+
+            last_good = self._redis_get_json(last_good_key)
+            acquired = self._try_acquire_inventory_lock(cache_key)
+            if not acquired:
+                if last_good is not None:
+                    return self._annotate_cache(last_good, "stale", stale=True)
+                return self._annotate_cache(
+                    {
+                        "dc_code": dc_code or "*",
+                        "summary": {},
+                        "families": [],
+                        "panels": [],
+                        "crm_only_panels": [],
+                        "unmapped_products": [],
+                        "error": "inventory_warming",
+                    },
+                    "miss",
+                    stale=False,
+                )
+            try:
+                payload = self._build_inventory_overview(
+                    dc_code, force_recompute=False
+                )
+                self.write_inventory_cache(dc_code or "*", payload)
+                return self._annotate_cache(payload, "miss", stale=False)
+            except Exception:
+                logger.exception("inventory overview compute failed dc=%s", dc_code)
+                if last_good is not None:
+                    return self._annotate_cache(last_good, "stale", stale=True)
+                raise
+            finally:
+                self._release_inventory_lock(cache_key)
+
+        acquired = self._try_acquire_inventory_lock(cache_key)
+        if not acquired and not force_recompute:
+            last_good = self._redis_get_json(last_good_key) or self._redis_get_json(cache_key)
+            if last_good is not None:
+                return self._annotate_cache(last_good, "stale", stale=True)
+
+        try:
+            payload = self._build_inventory_overview(
+                dc_code, force_recompute=force_recompute
+            )
+            self.write_inventory_cache(dc_code or "*", payload)
+            return self._annotate_cache(
+                payload,
+                "miss" if force_recompute else "hit",
+                stale=False,
+            )
+        finally:
+            if acquired:
+                self._release_inventory_lock(cache_key)
+
+    def _build_inventory_overview(
+        self,
+        dc_code: str,
+        *,
+        force_recompute: bool = False,
+    ) -> dict[str, Any]:
         calc = self._config.get_calc_dict() if self._config else {}
         under_pct = float(calc.get("efficiency.under_pct", 80.0))
         over_pct = float(calc.get("efficiency.over_pct", 110.0))
@@ -1159,6 +1738,20 @@ class InventoryOverviewService:
         ]
         mapping = self._load_product_mapping()
         panel_units = self._panel_unit_index(panels)
+        overview_dc = dc_code or "*"
+        try:
+            ratio_rows = list(self._sellable.list_ratios() or [])
+        except Exception:  # noqa: BLE001
+            ratio_rows = []
+        ratio_lookup: dict[tuple[str, str], ResourceRatio] = {
+            (r.family, r.dc_code): r
+            for r in ratio_rows
+            if getattr(r, "family", None)
+        }
+        try:
+            coupling_lookup = self._sellable._build_coupling_lookup()
+        except Exception:  # noqa: BLE001
+            coupling_lookup = {}
 
         entitled_raw = self._sales._run_query(sq.SALES_ENTITLED_RAW_GLOBAL, ())
         entitled_by_panel = aggregate_entitled_by_panel_key(
@@ -1195,6 +1788,9 @@ class InventoryOverviewService:
                 service_pages=service_pages,
                 under_pct=under_pct,
                 over_pct=over_pct,
+                dc_code=overview_dc,
+                ratio_lookup=ratio_lookup,
+                coupling_lookup=coupling_lookup,
             )
             if row.get("panel_key") in _NETBACKUP_INVENTORY_PANEL_KEYS:
                 row = _apply_netbackup_inventory_fields(
@@ -1223,6 +1819,9 @@ class InventoryOverviewService:
                 service_pages=service_pages,
                 under_pct=under_pct,
                 over_pct=over_pct,
+                dc_code=overview_dc,
+                ratio_lookup=ratio_lookup,
+                coupling_lookup=coupling_lookup,
             )
             if row.get("panel_key") in _NETBACKUP_INVENTORY_PANEL_KEYS:
                 row = _apply_netbackup_inventory_fields(
@@ -1252,12 +1851,17 @@ class InventoryOverviewService:
                 bucket,
                 panel_defs=panel_defs,
                 service_pages=service_pages,
+                dc_code=overview_dc,
+                ratio_lookup=ratio_lookup,
+                coupling_lookup=coupling_lookup,
             )
             panel_rows.append(row)
             crm_only_panels.append(row)
 
         panel_rows = _drop_hidden_families(panel_rows)
         crm_only_panels = _drop_hidden_families(crm_only_panels)
+        panel_rows = [_apply_comparison_only_fields(r) for r in panel_rows]
+        crm_only_panels = [_apply_comparison_only_fields(r) for r in crm_only_panels]
         panel_rows.sort(key=lambda r: (-float(r.get("crm_sold_tl") or 0), r.get("service_label") or ""))
 
         families_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -1281,6 +1885,7 @@ class InventoryOverviewService:
                 "has_infra": any(r.get("has_infra_source") for r in rows_sorted),
             })
         families_out.sort(key=lambda f: (f.get("family_label") or f.get("family") or "").lower())
+        families_out = _regroup_backup_families(families_out)
 
         mapped_ids = self._mapped_product_ids(mapping)
         bind_ids = mapped_ids if mapped_ids else ["__none__"]
@@ -1327,19 +1932,26 @@ class InventoryOverviewService:
             "unmapped_products": unmapped_products,
         }
 
-        if self._crm_redis is not None:
-            try:
-                self._crm_redis.setex(
-                    cache_key,
-                    int(_INVENTORY_CACHE_TTL_SEC),
-                    json.dumps(payload, default=str),
-                )
-            except Exception:  # noqa: BLE001
-                logger.debug("inventory overview cache write failed", exc_info=True)
-
         return payload
 
-    def warm_inventory_cache(self, dc_code: str = "*") -> dict[str, Any]:
-        """Prewarm Redis inventory overview cache (scheduler / admin refresh)."""
-        logger.info("inventory overview: warming cache dc=%s", dc_code or "*")
-        return self.compute_inventory_overview(dc_code=dc_code, force_recompute=True)
+    def warm_inventory_cache(
+        self,
+        dc_code: str = "*",
+        *,
+        force_recompute: bool = False,
+    ) -> dict[str, Any]:
+        """Prewarm Redis inventory overview (write-through; never deletes first).
+
+        Soft warm (default): rebuild from sellable tier caches without forcing
+        sellable recompute. Admin/explicit refresh may pass ``force_recompute=True``.
+        """
+        logger.info(
+            "inventory overview: warming cache dc=%s force_recompute=%s",
+            dc_code or "*",
+            force_recompute,
+        )
+        return self.compute_inventory_overview(
+            dc_code=dc_code,
+            force_recompute=force_recompute,
+            bypass_cache_read=True,
+        )

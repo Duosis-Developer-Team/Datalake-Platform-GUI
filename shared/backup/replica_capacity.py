@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
-from shared.backup.replica_classifier import classify_vm_name
+from shared.backup.replica_classifier import classify_vm_name, is_replica_like
 
 
 def _architecture_bucket(row: Mapping[str, Any]) -> str:
@@ -20,6 +20,10 @@ def _architecture_bucket(row: Mapping[str, Any]) -> str:
         return "classic"
     source = str(row.get("source") or "").strip().lower()
     if "nutanix" in source:
+        return "hyperconverged"
+    cluster = str(row.get("cluster") or "").strip().upper()
+    if cluster and "KM" not in cluster:
+        # Non-KM clusters default to HC when architecture unset (ADR-0024).
         return "hyperconverged"
     return "classic"
 
@@ -55,29 +59,29 @@ def sum_replica_resources(
     vm_rows: Iterable[Mapping[str, Any]] | None,
     patterns: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Sum resources for VMs classified as ``replica``, grouped classic/hc × cluster.
+    """Sum resources for name-based replica VMs, grouped classic/hc × cluster.
 
     Each row should include at least ``name``. Optional keys: ``cluster``,
     ``cpu``, ``memory_gb``, ``disk_gb``, ``architecture`` / ``arch`` / ``source``.
 
-    Returns::
-
-        {
-          "classic": {"by_cluster": {...}, "totals": {...}},
-          "hyperconverged": {"by_cluster": {...}, "totals": {...}},
-          "totals": {...},          # grand total across both architectures
-          "replica_vm_count": int,
-        }
+    Returns classic/hc totals plus per-bucket counts (veeam_dr / altra / custom).
     """
     classic: dict[str, dict] = {}
     hyperconv: dict[str, dict] = {}
     replica_count = 0
+    by_name_bucket: dict[str, int] = {
+        "veeam_dr": 0,
+        "altra_replica": 0,
+        "custom": 0,
+    }
 
     for row in vm_rows or []:
         name = row.get("name")
-        if classify_vm_name(name if name is None else str(name), patterns=patterns) != "replica":
+        bucket = classify_vm_name(name if name is None else str(name), patterns=patterns)
+        if not is_replica_like(bucket):
             continue
         replica_count += 1
+        by_name_bucket[bucket] = int(by_name_bucket.get(bucket, 0)) + 1
         cluster = str(row.get("cluster") or "").strip() or "(unknown)"
         if _architecture_bucket(row) == "hyperconverged":
             _add_row(hyperconv, cluster, row)
@@ -96,4 +100,5 @@ def sum_replica_resources(
         "hyperconverged": {"by_cluster": hyperconv, "totals": hc_totals},
         "totals": grand,
         "replica_vm_count": replica_count,
+        "by_name_bucket": by_name_bucket,
     }

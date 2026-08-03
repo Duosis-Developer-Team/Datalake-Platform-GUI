@@ -93,6 +93,30 @@ pages:
     label: "Veeam Replication — Storage"
     resource_unit: "GB"
     gui_tab_binding: "backup.veeam_replication"
+  backup_veeam_replication_classic_cpu:
+    label: "Veeam Replication Classic — CPU"
+    resource_unit: "vCPU"
+    gui_tab_binding: "backup.veeam_replication"
+  backup_veeam_replication_classic_ram:
+    label: "Veeam Replication Classic — RAM"
+    resource_unit: "GB"
+    gui_tab_binding: "backup.veeam_replication"
+  backup_veeam_replication_classic_storage:
+    label: "Veeam Replication Classic — Storage"
+    resource_unit: "GB"
+    gui_tab_binding: "backup.veeam_replication"
+  backup_veeam_replication_hyperconverged_cpu:
+    label: "Veeam Replication HC — CPU"
+    resource_unit: "vCPU"
+    gui_tab_binding: "backup.veeam_replication"
+  backup_veeam_replication_hyperconverged_ram:
+    label: "Veeam Replication HC — RAM"
+    resource_unit: "GB"
+    gui_tab_binding: "backup.veeam_replication"
+  backup_veeam_replication_hyperconverged_storage:
+    label: "Veeam Replication HC — Storage"
+    resource_unit: "GB"
+    gui_tab_binding: "backup.veeam_replication"
   backup_veeam_image:
     label: "Veeam Cloud Connect Backup"
     resource_unit: "per VM"
@@ -107,6 +131,30 @@ pages:
     gui_tab_binding: "backup.zerto_replication"
   backup_zerto_replication_storage:
     label: "Zerto Replication — Storage"
+    resource_unit: "GB"
+    gui_tab_binding: "backup.zerto_replication"
+  backup_zerto_replication_classic_cpu:
+    label: "Zerto Replication Classic — CPU"
+    resource_unit: "vCPU"
+    gui_tab_binding: "backup.zerto_replication"
+  backup_zerto_replication_classic_ram:
+    label: "Zerto Replication Classic — RAM"
+    resource_unit: "GB"
+    gui_tab_binding: "backup.zerto_replication"
+  backup_zerto_replication_classic_storage:
+    label: "Zerto Replication Classic — Storage"
+    resource_unit: "GB"
+    gui_tab_binding: "backup.zerto_replication"
+  backup_zerto_replication_hyperconverged_cpu:
+    label: "Zerto Replication HC — CPU"
+    resource_unit: "vCPU"
+    gui_tab_binding: "backup.zerto_replication"
+  backup_zerto_replication_hyperconverged_ram:
+    label: "Zerto Replication HC — RAM"
+    resource_unit: "GB"
+    gui_tab_binding: "backup.zerto_replication"
+  backup_zerto_replication_hyperconverged_storage:
+    label: "Zerto Replication HC — Storage"
     resource_unit: "GB"
     gui_tab_binding: "backup.zerto_replication"
   backup_netbackup_storage:

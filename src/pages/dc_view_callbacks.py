@@ -255,6 +255,7 @@ def sync_backup_image_tab_store(value):
     prevent_initial_call=True,
 )
 def sync_backup_replication_tab_store(value):
+    """Mirror Replication nested Veeam|Zerto tabs into the shell Store."""
     if value is None:
         raise dash.exceptions.PreventUpdate
     return value

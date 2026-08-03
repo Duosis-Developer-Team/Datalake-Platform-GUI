@@ -43,6 +43,7 @@ def _should_pause() -> bool:
 
 def _warm_sellable_for_dcs(dc_codes: list[str], tr: dict) -> int:
     from src.services import api_client as api
+    from src.utils.platform_sellable_aggregate import collect_backup_sellable_panels
     from src.utils.virt_sellable_aggregate import collect_virt_sellable_panels
 
     warmed = 0
@@ -53,6 +54,8 @@ def _warm_sellable_for_dcs(dc_codes: list[str], tr: dict) -> int:
                 break
             try:
                 collect_virt_sellable_panels(str(dc))
+                # Backup total card + nested sellable KPIs share this path.
+                collect_backup_sellable_panels(str(dc), max_family_workers=1)
                 warmed += 1
             except Exception:
                 logger.debug("background warm sellable failed dc=%s", dc, exc_info=True)

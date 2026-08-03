@@ -115,6 +115,37 @@ ORDER BY (dc_code = '*') ASC
 LIMIT 1;
 """
 
+LIST_STORAGE_COUPLINGS = """
+SELECT family, dc_code, scope_kind, scope_key, mode, notes, updated_by, updated_at
+FROM   gui_family_storage_coupling
+ORDER BY family, dc_code, scope_kind, scope_key;
+"""
+
+# ``notes`` is NOT NULL, so the proposed row is coalesced before the conflict
+# arbiter ever runs; NULLIF then keeps the seeded explanation when the board
+# saves a mode without touching the note.
+UPSERT_STORAGE_COUPLING = """
+INSERT INTO gui_family_storage_coupling
+    (family, dc_code, scope_kind, scope_key, mode, notes, updated_by, updated_at)
+VALUES (%s,%s,%s,%s,%s,COALESCE(%s,''),%s, NOW())
+ON CONFLICT (family, dc_code, scope_kind, scope_key) DO UPDATE SET
+    mode       = EXCLUDED.mode,
+    notes      = COALESCE(NULLIF(EXCLUDED.notes, ''), gui_family_storage_coupling.notes),
+    updated_by = EXCLUDED.updated_by,
+    updated_at = NOW();
+"""
+
+# A family row at dc_code='*' is the last fallback before 'auto' and must survive
+# an "inherit" drop; every other scope may be deleted so it falls back one level.
+DELETE_STORAGE_COUPLING = """
+DELETE FROM gui_family_storage_coupling
+WHERE family = %s
+  AND dc_code = %s
+  AND scope_kind = %s
+  AND scope_key = %s
+  AND NOT (dc_code = '*' AND scope_kind = 'family');
+"""
+
 UPSERT_RATIO = """
 INSERT INTO gui_panel_resource_ratio
     (family, dc_code, cpu_per_unit, ram_gb_per_unit, storage_gb_per_unit,
@@ -203,7 +234,9 @@ SELECT ppl.amount, pl.transactioncurrency_text
 FROM   discovery_crm_productpricelevels ppl
 JOIN   discovery_crm_pricelevels        pl  ON pl.pricelevelid = ppl.pricelevelid
 WHERE  ppl.productid = %s
-ORDER BY (pl.transactioncurrency_text = 'TL') DESC,
+ORDER BY (
+           pl.transactioncurrency_text IN ('TL', 'Turkish Lira', 'TRY')
+         ) DESC,
          ppl.amount DESC
 LIMIT 1;
 """
@@ -450,6 +483,68 @@ FROM public.raw_netbackup_jobs_metrics
 WHERE jobtype = 'BACKUP'
   AND percentcomplete = 100
   AND collection_timestamp BETWEEN %s AND %s
+"""
+
+# Inventory Pre/Post until retention exists: all finished BACKUP jobs (no time window).
+# kilobytestransferred = job transfer (not a native pre_dedup column);
+# post = transfer / dedupratio ≈ on-disk footprint per job.
+GLOBAL_NETBACKUP_JOBS_DEDUP_SUMMARY_ALL = """
+SELECT
+    COALESCE(SUM(kilobytestransferred) / 1024.0 / 1024.0 / 1024.0, 0) AS pre_dedup_gib,
+    COALESCE(
+        SUM(kilobytestransferred / NULLIF(dedupratio, 0))
+        / 1024.0 / 1024.0 / 1024.0,
+        0
+    ) AS post_dedup_gib
+FROM public.raw_netbackup_jobs_metrics
+WHERE jobtype = 'BACKUP'
+  AND percentcomplete = 100
+"""
+
+# Params: (image_policy_types text[]) — e.g. {'VMWARE'}.
+# Image vs Application Transfer(Pre)/PostDedup for CRM Inventory (shared pool Total/Free).
+GLOBAL_NETBACKUP_JOBS_DEDUP_SUMMARY_BY_CATEGORY = """
+WITH filtered AS (
+    SELECT
+        kilobytestransferred,
+        dedupratio,
+        CASE
+            WHEN UPPER(COALESCE(NULLIF(policytype, ''), '')) = ANY(%s)
+            THEN 'image'
+            ELSE 'application'
+        END AS category
+    FROM public.raw_netbackup_jobs_metrics
+    WHERE jobtype = 'BACKUP'
+      AND percentcomplete = 100
+)
+SELECT
+    category,
+    COALESCE(SUM(kilobytestransferred) / 1024.0 / 1024.0 / 1024.0, 0) AS pre_dedup_gib,
+    COALESCE(
+        SUM(kilobytestransferred / NULLIF(dedupratio, 0))
+        / 1024.0 / 1024.0 / 1024.0,
+        0
+    ) AS post_dedup_gib
+FROM filtered
+GROUP BY category
+ORDER BY category
+"""
+
+GLOBAL_NETBACKUP_JOBS_DISK_FOOTPRINT = """
+SELECT
+    jobid,
+    jobtype,
+    policyname,
+    policytype,
+    kilobytestransferred,
+    dedupratio,
+    (kilobytestransferred / NULLIF(dedupratio, 0)) AS footprint_kb,
+    collection_timestamp
+FROM public.raw_netbackup_jobs_metrics
+WHERE jobtype = 'BACKUP'
+  AND percentcomplete = 100
+ORDER BY collection_timestamp DESC
+LIMIT %s
 """
 
 GLOBAL_NETBACKUP_POOL_USED_BYTES = """

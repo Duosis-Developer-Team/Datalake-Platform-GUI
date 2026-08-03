@@ -590,7 +590,7 @@ def test_apply_netbackup_shared_pool_ranges_splits_image_and_app():
 
 
 def test_apply_replication_alternate_ranges_zeros_min():
-    """Replication alternate: min=0, max=host free."""
+    """Replication alternate: min=0, max=host free (CPU/RAM only)."""
     svc = _make_svc_with_redis()
     panel = PanelResult(
         panel_key="backup_veeam_replication_cpu",
@@ -612,7 +612,77 @@ def test_apply_replication_alternate_ranges_zeros_min():
     assert panel.sellable_raw == 60.0
     assert panel.potential_tl_min == 0.0
     assert panel.potential_tl_max == 300.0
-    assert any("alternate pool" in n for n in (panel.notes or []))
+    assert any("CPU/RAM only" in n for n in (panel.notes or []))
+
+
+def test_apply_replication_alternate_ranges_skips_storage():
+    """Replication storage is dedicated — not primary-vs-alternate with virt."""
+    svc = _make_svc_with_redis()
+    panel = PanelResult(
+        panel_key="backup_veeam_replication_storage",
+        label="Veeam Replication Storage",
+        family="backup_veeam_replication",
+        resource_kind="storage",
+        display_unit="GB",
+        total=1000.0,
+        allocated=400.0,
+        sellable_raw=600.0,
+        sellable_constrained=600.0,
+        unit_price_tl=2.0,
+        has_price=True,
+    )
+    svc._apply_replication_alternate_ranges([panel])
+    assert panel.sellable_min is None
+    assert panel.sellable_max is None
+    assert panel.sellable_constrained == 600.0
+    assert panel.sellable_raw == 600.0
+
+
+def test_storage_only_backup_skips_ratio_cap():
+    """NetBackup/image must not be zeroed by compute_bottleneck ratio-cap."""
+    from app.services.sellable_service import (
+        _SKIP_STORAGE_RATIO_CAP_FAMILIES,
+        _STORAGE_ONLY_BACKUP_FAMILIES,
+    )
+
+    assert "backup_netbackup" in _STORAGE_ONLY_BACKUP_FAMILIES
+    assert "backup_image" in _STORAGE_ONLY_BACKUP_FAMILIES
+    assert "backup_veeam_replication" in _SKIP_STORAGE_RATIO_CAP_FAMILIES
+    assert "backup_zerto_replication" in _SKIP_STORAGE_RATIO_CAP_FAMILIES
+
+    panel = PanelResult(
+        panel_key="backup_netbackup_image",
+        label="NetBackup Image",
+        family="backup_netbackup",
+        resource_kind="storage",
+        display_unit="TB",
+        total=100.0,
+        allocated=20.0,
+        sellable_raw=80.0,
+        sellable_constrained=80.0,
+        unit_price_tl=484.0,
+        has_price=True,
+        has_infra_source=True,
+    )
+    svc = _make_svc_with_redis()
+    svc.list_ratios = lambda: [
+        ResourceRatio(
+            family="backup_netbackup",
+            cpu_per_unit=1.0,
+            ram_gb_per_unit=8.0,
+            storage_gb_per_unit=100.0,
+        )
+    ]  # type: ignore[method-assign]
+    svc._build_unit_lookup = lambda: {}  # type: ignore[method-assign]
+    svc._get_sellable_calc_config = lambda: {  # type: ignore[method-assign]
+        "effective_ghz_per_unit": 1.0,
+        "physical_price_unit": "GHz",
+        "power_core_to_ghz": 3.3,
+    }
+    out = svc._apply_family_constraints_to_results([panel], "DC13")
+    # Shared-pool ranges may rewrite min/max, but must not ratio-cap to zero.
+    assert float(out[0].sellable_constrained or 0) > 0 or float(out[0].sellable_max or 0) > 0
+    assert float(out[0].potential_tl_max or out[0].potential_tl or 0) > 0
 
 
 def test_fetch_compute_metrics_returns_none_when_no_clusters():
@@ -693,7 +763,10 @@ def test_compute_panel_uses_dc_api_when_clusters_passed():
     assert result.total == 200.0
     assert result.allocated == 50.0
     assert result.sellable_raw == 160.0 - 50.0
-    assert any("cluster-scoped" in n for n in result.notes)
+    # The note names the endpoint and how wide the read was, so a DC-wide number
+    # can never be mistaken for a cluster-scoped one.
+    assert any("via datacenter-api/compute/hyperconverged" in n for n in result.notes)
+    assert any("2 cluster" in n for n in result.notes)
 
 
 def test_compute_panel_falls_back_to_db_when_no_clusters():
@@ -1945,6 +2018,38 @@ def test_sum_netbackup_pool_rows():
     assert avail == 2100.0
 
 
+def test_fetch_netbackup_pool_bytes_keeps_api_when_sql_wildly_larger():
+    sellable = SellableService.__new__(SellableService)
+    sellable._aggregate_netbackup_pools_via_dc_api = MagicMock(return_value={
+        "total_bytes": 1_000.0,
+        "used_pool_bytes": 400.0,
+        "available_bytes": 600.0,
+    })
+    sellable._aggregate_netbackup_pools_via_sql_fallback = MagicMock(return_value={
+        "total_bytes": 10_000.0,
+        "used_pool_bytes": 4000.0,
+        "available_bytes": 6000.0,
+    })
+    out = sellable._fetch_netbackup_pool_bytes()
+    assert out["total_bytes"] == 1_000.0
+
+
+def test_fetch_netbackup_pool_bytes_prefers_sql_when_modestly_larger():
+    sellable = SellableService.__new__(SellableService)
+    sellable._aggregate_netbackup_pools_via_dc_api = MagicMock(return_value={
+        "total_bytes": 1_000.0,
+        "used_pool_bytes": 400.0,
+        "available_bytes": 600.0,
+    })
+    sellable._aggregate_netbackup_pools_via_sql_fallback = MagicMock(return_value={
+        "total_bytes": 2_500.0,
+        "used_pool_bytes": 900.0,
+        "available_bytes": 1600.0,
+    })
+    out = sellable._fetch_netbackup_pool_bytes()
+    assert out["total_bytes"] == 2_500.0
+
+
 def test_aggregate_netbackup_pools_via_dc_api_sums_all_dcs():
     svc = SellableService.__new__(SellableService)
     svc._dc_api_url = "http://dc-api:8000"
@@ -1980,12 +2085,17 @@ def test_aggregate_netbackup_pools_via_dc_api_sums_all_dcs():
 def test_query_netbackup_inventory_metrics_dedup_and_available():
     svc_inner = MagicMock()
     svc_inner._run_row.return_value = (512.0, 128.0)
+    svc_inner._run_rows.return_value = [
+        ("image", 400.0, 100.0),
+        ("application", 112.0, 28.0),
+    ]
     conn = MagicMock()
     svc_inner._get_connection.return_value.__enter__ = MagicMock(return_value=conn)
     svc_inner._get_connection.return_value.__exit__ = MagicMock(return_value=False)
 
     sellable = SellableService.__new__(SellableService)
     sellable._svc = svc_inner
+    sellable._netbackup_image_policy_types = MagicMock(return_value=["VMWARE"])
     sellable._fetch_netbackup_pool_bytes = MagicMock(return_value={
         "total_bytes": 5_000_000_000_000.0,
         "used_pool_bytes": 2_000_000_000_000.0,
@@ -1995,12 +2105,17 @@ def test_query_netbackup_inventory_metrics_dedup_and_available():
     assert metrics["total_bytes"] == 5_000_000_000_000.0
     assert metrics["used_pool_bytes"] == 2_000_000_000_000.0
     assert metrics["available_bytes"] == 3_000_000_000_000.0
+    # Flat totals prefer category sum when present
     assert metrics["pre_dedup_bytes"] == 512.0 * (1024.0 ** 3)
     assert metrics["used_post_dedup_bytes"] == 128.0 * (1024.0 ** 3)
     assert metrics["dedup_savings_bytes"] > 0
     assert metrics["dedup_factor"] == pytest.approx(4.0)
+    assert metrics["by_category"]["image"]["pre_dedup_bytes"] == 400.0 * (1024.0 ** 3)
+    assert metrics["by_category"]["application"]["pre_dedup_bytes"] == 112.0 * (1024.0 ** 3)
     svc_inner._run_row.assert_called_once()
-    assert len(svc_inner._run_row.call_args[0][2]) == 2  # start_ts, end_ts
+    # Inventory uses all finished BACKUP jobs until retention exists (no time window).
+    assert svc_inner._run_row.call_args[0][2] == ()
+    svc_inner._run_rows.assert_called()
 
 
 def test_query_netbackup_storage_totals_pool_capacity_and_pool_used():

@@ -1,0 +1,72 @@
+/* Administration -> Platform -> Compute / Storage drag-and-drop board. */
+
+.csc-zone-body {
+    min-height: 180px;
+    padding: 8px;
+    border-radius: 10px;
+    border: 2px dashed rgba(171, 173, 176, 0.45);
+    background: #F8F9FE;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: background 120ms ease, border-color 120ms ease;
+}
+
+.csc-zone-body--over {
+    border-color: #4318FF;
+    background: rgba(67, 24, 255, 0.06);
+}
+
+.csc-zone-body--empty::after {
+    content: "Drop an environment here";
+    display: block;
+    text-align: center;
+    padding: 24px 8px;
+    font-size: 12px;
+    color: #A3AED0;
+}
+
+.csc-card {
+    cursor: grab;
+    user-select: none;
+    background: #ffffff;
+    border: 1px solid rgba(171, 173, 176, 0.25);
+    border-left: 4px solid #A3AED0;
+    border-radius: 8px;
+    padding: 8px 10px;
+    box-shadow: 0 2px 8px rgba(44, 47, 49, 0.05);
+}
+
+.csc-card:focus-visible {
+    outline: 2px solid #4318FF;
+    outline-offset: 2px;
+}
+
+.csc-card--dragging {
+    opacity: 0.45;
+    cursor: grabbing;
+}
+
+/* Moved out of the mode it was loaded with -> unsaved. */
+.csc-card--dirty {
+    border-left-color: #4318FF;
+    box-shadow: 0 2px 12px rgba(67, 24, 255, 0.18);
+}
+
+.csc-card--dirty .csc-card-dirty-dot {
+    display: inline-block;
+}
+
+.csc-card-dirty-dot {
+    display: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #4318FF;
+}
+
+.csc-card-family {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    color: #707EAE;
+}

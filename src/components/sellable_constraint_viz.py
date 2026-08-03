@@ -159,7 +159,112 @@ def sellable_constraint_badges(panel: dict[str, Any] | None, *, kind_label: str 
                 f"{prefix}oran sınırı: {lost:,.0f} {unit} kayıp",
                 color="orange", variant="light", size="sm",
             ))
+
+    frag = host_fragment_positive_hint(panel, kind_label=kind_label)
+    if frag is not None:
+        badges.append(frag)
     return badges
+
+
+def host_fragment_positive_hint(
+    panel: dict[str, Any] | None,
+    *,
+    kind_label: str = "",
+) -> Any | None:
+    """Explain positive alloc-track sellable when the pool looks over-threshold.
+
+    Host-based SUM (ADR-0017) can still yield headroom on individual hosts even
+    when DC/cluster allocation% exceeds the CRM threshold — intentional, not a bug.
+    """
+    if not panel:
+        return None
+    if (panel.get("computation_mode") or "").lower() != "host_based":
+        return None
+    total = float(panel.get("total") or 0)
+    allocated = float(panel.get("allocated") or 0)
+    if total <= 0:
+        return None
+    threshold = float(panel.get("threshold_pct") or 80.0)
+    pool_pct = 100.0 * allocated / total
+    alloc_sellable = panel.get("sellable_allocation")
+    if alloc_sellable is None:
+        alloc_sellable = panel.get("sellable_constrained")
+    if float(alloc_sellable or 0) <= 1e-9:
+        return None
+    if pool_pct <= threshold + 1e-9:
+        return None
+    prefix = f"{kind_label} " if kind_label else ""
+    return dmc.Badge(
+        (
+            f"{prefix}havuz %{pool_pct:.0f} dolu (eşik %{threshold:.0f}); "
+            "pozitif değer = host-bazlı headroom SUM (ADR-0017)"
+        ),
+        color="blue",
+        variant="light",
+        size="sm",
+    )
+
+
+def sellable_minmax_tape(
+    lo: float,
+    hi: float,
+    *,
+    unit: str = "GB",
+    subtitle: str = "sell all free → max; sell none → min",
+) -> html.Div:
+    """IBM-style min–max sellable band (gradient tape + English subtitle)."""
+    low = float(lo or 0)
+    high = float(hi or 0)
+    if high < low:
+        low, high = high, low
+    min_pct = 0.0 if high <= 1e-9 else min(100.0, 100.0 * low / high)
+
+    return html.Div(
+        style={"marginTop": "10px"},
+        children=[
+            html.Div(
+                style={
+                    "position": "relative",
+                    "height": "12px",
+                    "borderRadius": "8px",
+                    "background": "#E9EDF7",
+                    "overflow": "hidden",
+                },
+                children=[
+                    html.Div(
+                        style={
+                            "width": "100%",
+                            "height": "100%",
+                            "background": (
+                                "linear-gradient(90deg, #A3AED0 0%, #4318FF 55%, #05CD99 100%)"
+                            ),
+                            "opacity": 0.9,
+                        }
+                    ),
+                    html.Div(
+                        style={
+                            "position": "absolute",
+                            "left": f"{min_pct}%",
+                            "top": 0,
+                            "bottom": 0,
+                            "width": "2px",
+                            "background": "#2B3674",
+                        }
+                    ),
+                ],
+            ),
+            dmc.Group(
+                gap="md",
+                mt=6,
+                justify="space-between",
+                children=[
+                    dmc.Text(f"Min {low:,.0f} {unit}", size="xs", c="dimmed"),
+                    dmc.Text(subtitle, size="xs", c="#4318FF", fw=600),
+                    dmc.Text(f"Max {high:,.0f} {unit}", size="xs", c="dimmed"),
+                ],
+            ),
+        ],
+    )
 
 
 def storage_capacity_text(panel: dict[str, Any] | None) -> str:

@@ -1,0 +1,35 @@
+# Veeam session_type / jobs.type → Replication vs Image/Application Backup
+# (Platform Backup Mapping).
+#
+# Exact type strings listed under each bucket win; otherwise builtin contains
+# heuristics apply for unlisted values.
+#
+# Operators review these MultiSelects on Administration → Platform → Backup Mapping
+# → Veeam session types. Save/DB persist is not wired yet — edit this YAML seed.
+
+version: 1
+
+veeam_replication_session_types:
+  - ReplicaJob
+  - VSphereReplica
+  - Replica
+
+# Image Backup (VM / image-level Veeam backup) — shown under Backup → Image
+veeam_image_backup_session_types:
+  - BackupJob
+  - Backup
+  - BackupCopyJob
+
+# Application Backup (DB / app-aware) — shown under Backup → Application
+veeam_application_backup_session_types:
+  - SqlBackup
+  - OracleBackup
+  - SapBackup
+  - ExchangeBackup
+  - ApplicationBackup
+
+# Legacy union (still read for backward compatibility if image/app lists empty)
+veeam_backup_session_types:
+  - BackupJob
+  - Backup
+  - BackupCopyJob

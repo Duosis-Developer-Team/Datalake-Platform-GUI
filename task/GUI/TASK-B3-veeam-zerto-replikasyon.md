@@ -2,6 +2,7 @@
 
 **Tip:** Hesaplama / Feature · **Efor:** L · **Öncelik:** YÜKSEK
 **Karar:** [K-02](KARARLAR.md#k-02--veeamzerto-replikasyon-hi̇bri̇t-yöntem) — hibrit yöntem
+**Durum (2026-07-31):** `feature/backup-ia-veeam-split` — Backup IA Image|Application|Veeam|Zerto; Veeam session_type YAML; HC Nutanix ∩ vendor; virt sold exclusion + Customer Role badge; CRM classic/HC remap (035); Zerto DS + site context. Altra CRM SKU + license feed + Mapping Save hâlâ açık.
 
 ---
 

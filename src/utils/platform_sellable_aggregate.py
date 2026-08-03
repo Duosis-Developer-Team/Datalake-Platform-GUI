@@ -26,16 +26,17 @@ from src.utils.virt_sellable_aggregate import (
 # English info tooltip service groups for Potential Sales.
 POTENTIAL_SALES_SERVICE_GROUPS: tuple[str, ...] = (
     "Virtualization (Classic, Hyperconverged, Power)",
-    "Backup (NetBackup Image / Application, Nutanix Snapshots)",
-    "Replication (Veeam, Zerto)",
+    "Backup (NetBackup Image / Application — sold↔used for Nutanix snapshots)",
+    "Replication (Veeam / Zerto — unified families; architecture is filter only)",
     "Colocation / Physical (rack-U)",
 )
 
+# Potential Sales / sellable cards: one family per product line (no Classic/HC
+# duplicate cards, no Nutanix image sellable — snapshots are comparison-only).
 BACKUP_SELLABLE_FAMILIES: tuple[str, ...] = (
     "backup_netbackup",
     "backup_veeam_replication",
     "backup_zerto_replication",
-    "backup_image",
 )
 
 _NETBACKUP_PANEL_KEYS = frozenset({
@@ -46,11 +47,31 @@ _NETBACKUP_PANEL_KEYS = frozenset({
 _REPLICATION_FAMILIES = frozenset({
     "backup_veeam_replication",
     "backup_zerto_replication",
+    # Legacy classic/HC keys may still appear in cached panel rows
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
 })
 
 _VIRT_COMPUTE_FAMILIES = frozenset({
     "virt_classic",
     "virt_hyperconverged",
+})
+
+_REPLICATION_CLASSIC_FAMILIES = frozenset({
+    "backup_veeam_replication_classic",
+    "backup_zerto_replication_classic",
+})
+
+_REPLICATION_HC_FAMILIES = frozenset({
+    "backup_veeam_replication_hyperconverged",
+    "backup_zerto_replication_hyperconverged",
+})
+
+_REPLICATION_UNIFIED_FAMILIES = frozenset({
+    "backup_veeam_replication",
+    "backup_zerto_replication",
 })
 
 
@@ -65,9 +86,14 @@ def collect_backup_sellable_panels(
 
     def _fetch(family: str) -> list[dict]:
         kwargs: dict[str, Any] = {"dc_code": str(dc_id), "family": family}
-        if family in ("backup_veeam_replication", "backup_zerto_replication"):
+        if family in _REPLICATION_UNIFIED_FAMILIES:
+            # Unified family: pass both scopes when available (API may ignore).
+            merged = list(classic_clusters or []) + list(hyperconv_clusters or [])
+            if merged:
+                kwargs["clusters"] = merged
+        elif family in _REPLICATION_CLASSIC_FAMILIES:
             kwargs["clusters"] = classic_clusters
-        elif family == "backup_image":
+        elif family in _REPLICATION_HC_FAMILIES:
             kwargs["clusters"] = hyperconv_clusters
         chunk = api.get_sellable_by_panel(**kwargs) or []
         return chunk if isinstance(chunk, list) else []
@@ -109,7 +135,7 @@ def _dedupe_virt_replication_tl(panels: list[dict]) -> list[tuple[str, float, fl
         (p.get("resource_kind") or "").lower()
         for p in panels
         if (p.get("family") in _VIRT_COMPUTE_FAMILIES or p.get("family") in _REPLICATION_FAMILIES)
-        and (p.get("resource_kind") or "").lower() in ("cpu", "ram", "storage")
+        and (p.get("resource_kind") or "").lower() in ("cpu", "ram")
     })
     for kind in kinds:
         virt = [
@@ -234,13 +260,32 @@ def collect_platform_sellable_panels(
 
 
 def potential_sales_info_text() -> str:
-    """English tooltip body listing examined service groups."""
-    lines = ["Potential Sales includes sellable headroom across:"]
+    """English tooltip body explaining Potential Sales calculation rules."""
+    lines = [
+        "Potential Sales includes sellable headroom across:",
+    ]
     for group in POTENTIAL_SALES_SERVICE_GROUPS:
         lines.append(f"• {group}")
-    lines.append(
-        "Shared pools use IBM-style min–max bands (virt↔replication host free; "
-        "NetBackup Image↔Application disk pool). Colocation free rack-U is included."
+    lines.extend(
+        [
+            "",
+            "How capacity is calculated:",
+            "• Virtualization CPU/RAM is primary on the host pool; "
+            "Veeam/Zerto replication CPU/RAM is an alternate claimant "
+            "(min=0 if virt sells all free, max=full free if replication sells all).",
+            "• NetBackup Image and Application share one disk pool "
+            "(IBM-style min=half free, max=full free).",
+            "• Veeam replication storage uses all VMware datastores except NetBackup "
+            "(dedicated; not shared with virt). On hyperconverged, Nutanix disks "
+            "are included when VMware-managed HC VMs use Veeam.",
+            "• Zerto replication storage uses VMware datastores except Veeam and "
+            "NetBackup (dedicated compute path only — never raw site-metrics history).",
+            "• Classic vs Hyperconverged is a filter/breakdown only; sellable cards "
+            "use one Veeam Replication and one Zerto Replication family.",
+            "• Nutanix image snapshots are sold↔used comparison only (not sellable).",
+            "• Colocation free rack-U is included.",
+            "• License headroom is not included yet (external data source planned).",
+        ]
     )
     return "\n".join(lines)
 

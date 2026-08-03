@@ -494,6 +494,36 @@ class ResourceRatioUpsert(BaseModel):
     notes: Optional[str] = None
 
 
+class StorageCouplingRow(BaseModel):
+    """Compute/storage coupling of one virtualisation environment."""
+
+    model_config = {"extra": "allow"}
+
+    family: str
+    dc_code: str = "*"
+    mode: str = "auto"           # auto | merged | separate
+    notes: Optional[str] = None
+    updated_by: Optional[str] = None
+    scope_kind: str = "family"   # family | cluster
+    scope_key: str = ""          # cluster name when scope_kind='cluster'
+
+
+class StorageCouplingUpsert(BaseModel):
+    family: str
+    dc_code: str = "*"
+    mode: str = "auto"
+    notes: Optional[str] = None
+    scope_kind: str = "family"
+    scope_key: str = ""
+
+
+class StorageCouplingBulkUpsert(BaseModel):
+    """Whole board saved in one transaction by the drag-and-drop editor."""
+
+    rows: List[StorageCouplingUpsert] = []
+    updated_by: Optional[str] = None
+
+
 class UnitConversionRow(BaseModel):
     model_config = {"extra": "allow"}
 

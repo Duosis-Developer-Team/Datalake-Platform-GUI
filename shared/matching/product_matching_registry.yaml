@@ -47,32 +47,61 @@ products:
     usage_source: Loki - Virutal Machines
     matching_rule: HC cpu x DR/Replica VM name patterns (NetBox)
     match_status: capacity
-    panel_key: virt_hyperconverged_cpu
+    panel_key: backup_replication_cpu
     family: backup_replication
-    notes: Classify via global VM name patterns before virt billable
+    inventory_group: replication
+    notes: Classify via global VM name patterns before virt billable; CRM Inventory under Replication
     infra_tables: [nutanix_vm_metrics, discovery_netbox_virtualization_vm]
   "000BLT-53":
     name: Hyperconverged Mimari Intel RAM - DR
     usage_source: Loki - Virutal Machines
     matching_rule: HC ram x DR/Replica VM name patterns
     match_status: capacity
+    panel_key: backup_replication_ram
     family: backup_replication
+    inventory_group: replication
     infra_tables: [nutanix_vm_metrics, discovery_netbox_virtualization_vm]
   "000BLT-51":
     name: Hyperconverged Mimari Intel Disk - SSD Hybrid - DR
     usage_source: Loki - Virutal Machines
     matching_rule: HC disk x DR/Replica VM name patterns
     match_status: capacity
+    panel_key: backup_replication_storage
     family: backup_replication
+    inventory_group: replication
     infra_tables: [nutanix_vm_metrics, discovery_netbox_virtualization_vm]
   "000BLT-45":
     name: Hyperconverged İmaj Yedekleme Hizmeti
     usage_source: Loki - Virutal Machines
     matching_rule: Nutanix Backup imaj policy x gün x total hyperconverged disk
-    match_status: capacity
+    match_status: crm_only
     panel_key: backup_image_hyperconverged
     family: backup_nutanix
+    inventory_group: image_backup
+    comparison_only: true
+    notes: Hidden from CRM Inventory / unmatched until HC image sellable clarified
     infra_tables: [nutanix_snapshot_schedule, nutanix_snapshot_schedule_metrics]
+  "000BLT-221":
+    name: Remote Backup Hizmeti (Nutanix)
+    usage_source: Nutanix Remote
+    matching_rule: Remote Nutanix backup capacity
+    match_status: capacity
+    panel_key: backup_remote_nutanix
+    family: backup_remote
+    inventory_group: image_backup
+    notes: Separate Image Backup row from 000BLT-45
+  "000BLT-70":
+    name: Offsite Backup Disk Alanı (S3)
+    match_status: documented
+    panel_key: backup_offsite_s3
+    family: backup_offsite
+    inventory_group: image_backup
+  "000BLT-71":
+    name: Offsite Backup Disk Alanı (Veeam)
+    match_status: documented
+    panel_key: backup_offsite_veeam
+    family: backup_offsite
+    inventory_group: image_backup
 
   # ---- Classic virt (KM) ----
   "000BLT-58":
@@ -185,21 +214,25 @@ products:
     family: virt_power_hana
     infra_tables: [ibm_lpar_general]
 
-  # ---- Zerto / Veeam replication capacity SKUs ----
+  # ---- Zerto / Veeam replication capacity SKUs (Classic/HC panel keys) ----
   "000BLT-170":
     name: Hyperconverged Mimari Zerto Replication vCPU
     usage_source: Zerto - loki virtual machines
     matching_rule: hyperconverged ortamda sadece replikasyon gönderen
     match_status: capacity
-    family: backup_zerto
-    infra_tables: [raw_zerto_vm_metrics, raw_zerto_vpg_metrics]
+    panel_key: backup_zerto_replication_hyperconverged_cpu
+    family: backup_zerto_replication_hyperconverged
+    infra_tables: [vm_metrics, cluster_metrics, nutanix_host_metrics]
+    infra_columns: [cpu_cap_ghz, number_of_cpus]
   "000BLT-174":
     name: Klasik Mimari Zerto Replication vCpu
     usage_source: Zerto - loki virtual machines
     matching_rule: Klasik Mimari ortamda sadece replikasyon gönderen
     match_status: capacity
-    family: backup_zerto
-    infra_tables: [raw_zerto_vm_metrics, raw_zerto_vpg_metrics]
+    panel_key: backup_zerto_replication_classic_cpu
+    family: backup_zerto_replication_classic
+    infra_tables: [vm_metrics, cluster_metrics, datacenter_metrics]
+    infra_columns: [total_cpu_ghz_capacity, number_of_cpus]
 
   # ---- Licenses (customer phase) ----
   "000BLT-144":
