@@ -128,6 +128,104 @@ def test_auto_summary_line_handles_empty_note():
     assert vv.auto_summary_line({"added": [], "fixed": [], "improved": []}).strip() != ""
 
 
+def _badge_texts(body: dict) -> list[str]:
+    group = vv._count_badges(body)
+    return [b.children for b in (group.children if group else [])]
+
+
+def test_count_badges_do_not_pluralise_after_a_number():
+    """Türkçe'de sayıdan sonra çoğul eki gelmez: '36 yenilikler' değil, '36 YENİLİK'."""
+    body = {
+        "added": [{"shas": ["a1"], "text": "x"}, {"shas": ["a2"], "text": "x2"}],
+        "fixed": [{"shas": ["b1"], "text": "y"}],
+        "improved": [{"shas": ["c1"], "text": "z"}],
+    }
+    texts = _badge_texts(body)
+    assert all("LER" not in t and "LAR" not in t for t in texts), texts
+    assert texts == ["2 YENİLİK", "1 DÜZELTME", "1 İYİLEŞTİRME"]
+
+
+def test_count_badges_keep_the_dotted_turkish_i():
+    """CSS uppercase 'i'yi 'I' yapıyordu; metin hazır büyük harf gelmeli."""
+    body = {"added": [{"shas": ["a1"], "text": "x"}], "fixed": [], "improved": []}
+    group = vv._count_badges(body)
+    badge = group.children[0]
+    assert "İ" in badge.children, badge.children
+    assert badge.tt == "none", "tt=uppercase Türkçe İ'yi bozuyor"
+
+
+def test_model_note_section_headings_keep_the_dotted_turkish_i():
+    """Bölüm başlıkları yalnızca source='model' notlarda çizilir — aynı İ tuzağı.
+
+    Local'de LLM erişilemediği için bu yol gözle görülemiyor; testin görmesi gerek.
+    """
+    rel = {
+        "version": "2026.08.1",
+        "note": {
+            "source": "model",
+            "headline": "Başlık",
+            "body": {
+                "added": [],
+                "fixed": [],
+                "improved": [{"shas": ["c1"], "text": "z"}],
+            },
+        },
+    }
+    texts: list = []
+
+    def collect(node):
+        if node is None or isinstance(node, str):
+            return
+        if isinstance(node, (list, tuple)):
+            for n in node:
+                collect(n)
+            return
+        if getattr(node, "tt", None) == "uppercase":
+            texts.append(getattr(node, "children", None))
+        collect(getattr(node, "children", None))
+
+    collect(vv.headline_block(rel))
+    assert not texts, f"CSS uppercase Türkçe metni bozuyor: {texts}"
+
+
+def test_stat_strip_labels_keep_the_dotted_turkish_i():
+    """Şerit etiketleri 'DEĞIŞIKLIK' / 'YAYINDAKI SÜRÜM' diye çiziliyordu."""
+    strip = vv.stat_strip([_release()], "2026.07.1")
+    labels: list[str] = []
+
+    def collect(node):
+        if node is None or isinstance(node, str):
+            return
+        if isinstance(node, (list, tuple)):
+            for n in node:
+                collect(n)
+            return
+        if getattr(node, "tt", None) == "uppercase":
+            labels.append(getattr(node, "children", None))
+        collect(getattr(node, "children", None))
+
+    collect(strip)
+    assert not labels, f"CSS uppercase Türkçe etiketi bozuyor: {labels}"
+
+    blob: list[str] = []
+
+    def texts(node):
+        if node is None:
+            return
+        if isinstance(node, str):
+            blob.append(node)
+            return
+        if isinstance(node, (list, tuple)):
+            for n in node:
+                texts(n)
+            return
+        texts(getattr(node, "children", None))
+
+    texts(strip)
+    assert "DEĞİŞİKLİK" in blob
+    assert "YAYINDAKİ SÜRÜM" in blob
+
+
 def test_three_buckets_read_as_a_turkish_list_not_a_chain_of_ve():
     """Üç kova dolduğunda 'a ve b ve c' değil, 'a, b ve c' yazılmalı."""
     body = {

@@ -150,11 +150,30 @@ def _bullet_rows(items: list[dict], color: str) -> list:
     ]
 
 
+# Büyük harfli etiketler burada açıkça yazılıyor. Ne CSS `text-transform:
+# uppercase` ne de Python'un `str.upper()`'ı Türkçe'yi doğru büyütüyor: ikisi de
+# "i" harfini "I" yapıyor ("İYİLEŞTİRME" yerine "IYILEŞTIRME"). Yazan taraf
+# hazır büyük harf verip dönüşümü tt="none" ile kapatınca sorun kalmıyor.
+#
+# _COUNT_LABELS sayıyla birlikte kullanılır; Türkçe'de sayıdan sonra çoğul eki
+# gelmez ("36 yenilikler" değil, "36 yenilik"), o yüzden bölüm başlıklarından
+# ayrı duruyor.
+_COUNT_LABELS = {"added": "YENİLİK", "fixed": "DÜZELTME", "improved": "İYİLEŞTİRME"}
+_SECTION_LABELS = {"added": "YENİLİKLER", "fixed": "DÜZELTMELER", "improved": "İYİLEŞTİRMELER"}
+
+
 def _count_badges(body: dict) -> dmc.Group | None:
     counts = bucket_counts(body)
     chips = [
-        dmc.Badge(f"{counts[key]} {label}", color=color, variant="light", size="sm", radius="sm")
-        for key, label, color, _icon in BUCKETS
+        dmc.Badge(
+            f"{counts[key]} {_COUNT_LABELS[key]}",
+            color=color,
+            variant="light",
+            size="sm",
+            radius="sm",
+            tt="none",
+        )
+        for key, _label, color, _icon in BUCKETS
         if counts[key]
     ]
     return dmc.Group(gap="xs", children=chips) if chips else None
@@ -175,7 +194,7 @@ def headline_block(rel: dict) -> dmc.Stack:
         children.append(badges)
 
     if source == "model":
-        for key, label, color, icon in BUCKETS:
+        for key, _label, color, icon in BUCKETS:
             items = body.get(key) or []
             if not items:
                 continue
@@ -189,7 +208,7 @@ def headline_block(rel: dict) -> dmc.Stack:
                             children=[
                                 DashIconify(icon=icon, width=14, color=f"var(--mantine-color-{color}-6)"),
                                 dmc.Text(
-                                    label, size="xs", fw=700, tt="uppercase",
+                                    _SECTION_LABELS[key], size="xs", fw=700, tt="none",
                                     c=f"var(--mantine-color-{color}-7)",
                                 ),
                             ],
@@ -337,10 +356,11 @@ def history_row(rel: dict, *, can_regenerate: bool = False) -> dmc.AccordionItem
 
 
 def _stat(value: str, label: str) -> html.Div:
+    """`label` hazır büyük harf gelir — bkz. _COUNT_LABELS yanındaki not."""
     return html.Div(
         children=[
             dmc.Text(value, fw=800, size="xl", c=_ACCENT, style={"lineHeight": 1.1}),
-            dmc.Text(label, size="xs", c="dimmed", tt="uppercase", fw=600),
+            dmc.Text(label, size="xs", c="dimmed", tt="none", fw=600),
         ]
     )
 
@@ -357,10 +377,10 @@ def stat_strip(releases: list[dict], live_version: str | None) -> dmc.Paper:
         children=dmc.Group(
             gap="xl",
             children=[
-                _stat(str(len(releases)), "sürüm"),
-                _stat(str(total_changes), "değişiklik"),
-                _stat(str(with_notes), "yazılmış not"),
-                _stat(live_version or "—", "yayındaki sürüm"),
+                _stat(str(len(releases)), "SÜRÜM"),
+                _stat(str(total_changes), "DEĞİŞİKLİK"),
+                _stat(str(with_notes), "YAZILMIŞ NOT"),
+                _stat(live_version or "—", "YAYINDAKİ SÜRÜM"),
             ],
         ),
     )
