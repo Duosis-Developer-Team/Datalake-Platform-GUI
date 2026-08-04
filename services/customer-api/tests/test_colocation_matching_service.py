@@ -402,6 +402,78 @@ def test_failure_payload_includes_allocation_shape():
     assert degraded["allocation"] == []
     assert degraded["aggregate"]["colocation_allocated_u"] == 0
     assert degraded["aggregate"]["sellable_free_u"] == 0
+    assert degraded["aggregate"]["network_free_u"] == 0
+    assert degraded["aggregate"]["role_breakdown"] == []
+
+
+# ---------------------------------------------------------------------------
+# Customer rule 2026-08-04: NETWORK racks (role 1) leave the sellable pool too,
+# and the page has to be able to say what it removed.
+# ---------------------------------------------------------------------------
+
+def _rows_with_network():
+    return _allocation_rows() + [
+        {"rack_name": "N01", "dc": "DC13", "capacity_u": 47, "used_u": 30, "free_u": 17,
+         "tenants": [], "role_id": "1", "tags": [], "description": "", "tenant_name": None},
+    ]
+
+
+def _payload_with_network(svc, price):
+    with patch("app.services.colocation_matching_service.occupancy_rows",
+               return_value=_rows_with_network()), \
+         patch("app.services.colocation_matching_service.tenant_occupancy_rows", return_value=[]), \
+         patch("app.services.colocation_matching_service.used_u_breakdown", return_value={}), \
+         patch("app.services.colocation_matching_service.resolve_colocation_unit_price",
+               return_value=(price, "crm")):
+        return svc.get_colocation("DC13")
+
+
+def test_network_rack_free_u_leaves_the_sellable_pool():
+    """The complaint: switching cabinets were offered for sale. Only rack 402
+    (HOST) is sellable, so the network rack's 17 free U must not appear in
+    sellable_free_u -- while free_u keeps counting them as physical space."""
+    svc, price = _service_with_price(100.0)
+
+    agg = _payload_with_network(svc, price)["aggregate"]
+
+    assert agg["sellable_free_u"] == 37
+    assert agg["free_u"] == 27 + 47 + 42 + 37 + 17
+    assert agg["free_u_potential_tl"] == 37 * price
+
+
+def test_network_rack_never_appears_as_a_colocation_customer():
+    """A network rack is nobody's. Widening the colocation role set instead of
+    adding a separate sellability rule would have filed it under Unattributed
+    and invented a customer that does not exist."""
+    svc, price = _service_with_price(100.0)
+
+    payload = _payload_with_network(svc, price)
+
+    assert payload["aggregate"]["colocation_allocated_u"] == 136  # unchanged
+    assert all(c["customer"] != "N01" for c in payload["allocation"])
+    assert sum(c["allocated_u"] for c in payload["allocation"]) == 136
+
+
+def test_aggregate_carries_the_network_slice_and_role_breakdown():
+    """The page must be able to name what it subtracted, so the numbers behind
+    the subtraction travel with the payload rather than being recomputed in
+    the GUI off data it does not have."""
+    svc, price = _service_with_price(100.0)
+
+    agg = _payload_with_network(svc, price)["aggregate"]
+
+    assert agg["network_free_u"] == 17
+    assert agg["network_capacity_u"] == 47
+    assert agg["network_rack_count"] == 1
+
+    by_role = {r["role_name"]: r for r in agg["role_breakdown"]}
+    assert by_role["HOST"]["sellable"] is True
+    assert by_role["NETWORK"]["sellable"] is False
+    assert by_role["CUSTOMER"]["sellable"] is False
+    assert by_role["NON-STANDART"]["sellable"] is False
+    # every rack is accounted for, sellable or not
+    assert sum(r["rack_count"] for r in agg["role_breakdown"]) == 5
+    assert sum(r["free_u"] for r in agg["role_breakdown"]) == agg["free_u"]
 
 
 # ---------------------------------------------------------------------------

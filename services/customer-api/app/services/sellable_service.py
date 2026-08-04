@@ -441,6 +441,7 @@ from app.services.currency_service import CurrencyService
 from app.services.customer_service import CustomerService
 from app.services.tagging_service import TaggingService, build_metric_key
 from app.services.webui_db import WebuiPool
+from shared.colocation import allocation as coloc_alloc
 from shared.colocation import occupancy as coloc_occ
 from shared.licensing import os_sql
 from shared.sellable.computation import (
@@ -1588,7 +1589,18 @@ SELECT _tot, _alloc FROM latest
     def _query_colocation_totals(self, src, dc_code: str) -> tuple[float, float]:
         """dc_hosting_u total/allocated from the shared occupancy module.
 
-        total = Σ capacity_u, allocated = Σ used_u over the DC pattern.
+        total = Σ capacity_u, allocated = Σ used_u over the DC pattern --
+        counting SELLABLE racks only (``allocation.sellable_rack_totals``).
+        NETWORK racks hold switching gear and colocation racks already belong
+        to a customer; neither can be sold to anyone else, so neither belongs
+        in the pool this panel prices. Requested by the customer 2026-08-04
+        ("kabinlerde customer cabinetler U hesaplamasında dışarda tutulmalı" /
+        "network kabinide aynı şekilde").
+
+        The rack-level Free U shown on the DC Colocation card stays the
+        physical total on purpose -- that tile answers "how much empty space
+        is there", this pair answers "how much of it can we sell". They are
+        different questions and both numbers are true.
         """
         pattern = self._dc_pattern(dc_code)
         # '%' (global default) -> None so occupancy returns all racks.
@@ -1600,9 +1612,7 @@ SELECT _tot, _alloc FROM latest
         except Exception as exc:  # noqa: BLE001
             logger.warning("colocation totals query failed for %s: %s", dc_code, exc)
             return 0.0, 0.0
-        total = float(sum(int(r.get("capacity_u") or 0) for r in rows))
-        allocated = float(sum(int(r.get("used_u") or 0) for r in rows))
-        return total, allocated
+        return coloc_alloc.sellable_rack_totals(rows)
 
     def _query_licensed_os_totals(self, src, dc_code: str) -> tuple[float, float]:
         """Detected guest count backing a licence / OS-management panel.

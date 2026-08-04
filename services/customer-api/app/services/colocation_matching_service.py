@@ -101,10 +101,16 @@ class ColocationMatchingService:
             "free_u_potential_tl": None, "used_u_potential_tl": None,
             # Phase 2 Task B (allocation model): colocation_allocated_u is Σ
             # capacity_u over every colocation-role rack; sellable_free_u is
-            # the free_u subset OUTSIDE colocation-role racks (see
-            # aggregate_rack_allocations). free_u itself keeps meaning "total
-            # free U across all racks" -- unchanged.
+            # the free_u subset in SELLABLE racks -- neither colocation-role
+            # nor NETWORK (see aggregate_rack_allocations). free_u itself
+            # keeps meaning "total free U across all racks" -- unchanged.
             "colocation_allocated_u": 0, "sellable_free_u": 0,
+            # The subtraction, itemised, so the card can name what it removed
+            # instead of just showing a smaller number (customer rule
+            # 2026-08-04). Present-but-empty here, not absent: the degraded
+            # payload did compute sellability, it just found nothing.
+            "network_free_u": 0, "network_capacity_u": 0, "network_rack_count": 0,
+            "role_breakdown": [],
         }
         return {"aggregate": aggregate, "customers": [], "internal": [], "racks": [],
                 "allocation": []}
@@ -149,11 +155,20 @@ class ColocationMatchingService:
             "price_source": price_source,
             "colocation_allocated_u": allocation["colocation_allocated_u"],
             "sellable_free_u": allocation["sellable_free_u"],
+            # Customer rule 2026-08-04: network cabinets left the sellable pool
+            # alongside customer cabinets. These carry the subtraction's own
+            # numbers to the card so it can say WHICH roles came out and by how
+            # much -- a number that quietly shrank reads as a regression.
+            "network_free_u": allocation["network_free_u"],
+            "network_capacity_u": allocation["network_capacity_u"],
+            "network_rack_count": allocation["network_rack_count"],
+            "role_breakdown": allocation["role_breakdown"],
             # free_u_potential_tl now prices the SELLABLE base only (free U
-            # outside colocation-allocated racks) -- free U *inside* a
-            # customer's own rack belongs to them, not to the platform's
-            # sellable pool (design doc section 3). aggregate["free_u"]
-            # itself is untouched and still means total free U everywhere.
+            # outside colocation-allocated and network racks) -- free U
+            # *inside* a customer's own rack belongs to them, and a network
+            # rack is switching space nobody can rent (design doc section 3).
+            # aggregate["free_u"] itself is untouched and still means total
+            # free U everywhere.
             "free_u_potential_tl": potential_tl(allocation["sellable_free_u"], unit_price),
             "used_u_potential_tl": potential_tl(aggregate["used_u"], unit_price),
         })
