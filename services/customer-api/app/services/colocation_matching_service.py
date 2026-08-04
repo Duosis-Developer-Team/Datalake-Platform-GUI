@@ -14,12 +14,14 @@ from shared.colocation.occupancy import (
 )
 from shared.colocation.matching import build_customer_footprint, build_internal_footprint
 from shared.colocation.allocation import aggregate_rack_allocations
+from shared.colocation.role_rules import DEFAULT_RULES, RoleRules
 from app.db.queries import service_mapping as sm
 from app.services import cache_service as cache
 from app.services.colocation_price_service import (
     potential_tl,
     resolve_colocation_unit_price,
 )
+from app.services.colocation_role_rule_service import ColocationRoleRuleService
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +36,20 @@ INTERNAL_ACCOUNT_ID = "INTERNAL"
 # + two price lookups, ~42 SQL statements for the unfiltered "*" variant) is
 # the same shape of cost that justified 21600s there.
 _CACHE_TTL_SECONDS = 21600
+# The cache key now carries the rack-role rule etag (see _cache_key), so a
+# config change moves every DC onto fresh keys instead of waiting out this TTL.
 
 
 class ColocationMatchingService:
-    def __init__(self, customer_service, webui):
+    def __init__(self, customer_service, webui, role_rules_service=None):
         self._svc = customer_service
         self._webui = webui
+        # Injected by the router from app.state so the 30s memo survives across
+        # requests -- this service itself is built PER REQUEST, so a memo owned
+        # here would be born empty on every call.
+        self._rules_svc = role_rules_service or ColocationRoleRuleService(
+            webui, customer_service
+        )
 
     def _alias_index(self) -> dict:
         """{lowercased tenant string -> {crm_accountid, crm_account_name}} from
@@ -115,7 +125,19 @@ class ColocationMatchingService:
         return {"aggregate": aggregate, "customers": [], "internal": [], "racks": [],
                 "allocation": []}
 
-    def _fetch_colocation(self, dc_code: str) -> dict:
+    @staticmethod
+    def _cache_key(dc_code: str, rules: RoleRules) -> str:
+        """Cache key including the rule-set etag.
+
+        The etag is in the KEY, not just flushed on write, because
+        cache_backend.cache_get backfills Redis from a worker's in-process
+        memory tier with nx=True: one worker's flush can be undone by another
+        worker's stale copy. A key that no longer exists is never asked for,
+        so it can never be resurrected.
+        """
+        return f"colocation:{dc_code}:{rules.etag}"
+
+    def _fetch_colocation(self, dc_code: str, rules: RoleRules = DEFAULT_RULES) -> dict:
         pattern = None if not dc_code or dc_code == "*" else f"%{dc_code.strip()}%"
         # Computed once, up front: _internal_prefixes() talks to webui, not the
         # datalake connection opened below, and is reused for the summary-bar
@@ -144,7 +166,7 @@ class ColocationMatchingService:
         # holds this rack". allocated_u = Σ capacity_u of a customer's racks;
         # used_u = their front-face U occupancy (same occupancy.py signal,
         # just grouped by rack allocation instead of device tenant_name).
-        allocation = aggregate_rack_allocations(rows)
+        allocation = aggregate_rack_allocations(rows, rules)
 
         aggregate.update({
             "external_u": int(breakdown.get("external_u") or 0),
@@ -192,13 +214,16 @@ class ColocationMatchingService:
         # dc_code argument since "*" (all DCs, ~42 SQL statements) and a
         # single DC code return different payloads and must not share an
         # entry. Mirrors dc_service.DatabaseService.get_dc_racks_occupancy.
-        cache_key = f"colocation:{dc_code}"
+        rules = self._rules_svc.load_rules()
+        cache_key = self._cache_key(dc_code, rules)
         cached_val = cache.get(cache_key)
         if cached_val is not None:
             return cached_val
         try:
             return cache.run_singleflight(
-                cache_key, lambda: self._fetch_colocation(dc_code), ttl=_CACHE_TTL_SECONDS
+                cache_key,
+                lambda: self._fetch_colocation(dc_code, rules),
+                ttl=_CACHE_TTL_SECONDS,
             )
         except Exception as exc:  # noqa: BLE001
             # A factory exception is never cached by run_singleflight, so a

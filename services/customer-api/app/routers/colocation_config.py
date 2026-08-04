@@ -1,6 +1,8 @@
 """Colocation sellable rack-role rule endpoints (webui-db)."""
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException, Request
 
 from app.models.schemas import ColocationRoleRulesUpdate
@@ -8,6 +10,8 @@ from app.services.colocation_role_rule_service import (
     ColocationRoleRuleService,
     get_role_rule_service,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -48,4 +52,18 @@ def put_role_rules(body: ColocationRoleRulesUpdate, request: Request):
         notes=body.notes,
         updated_by="settings-ui",
     )
+    # Correctness comes from the etag in the cache key; this flush is only for
+    # immediacy, so the colocation card moves now instead of after its 6h TTL.
+    #
+    # Only customer-api's OWN cache is flushed here. The sellable panel's cache
+    # lives in the crm-engine process on a different Redis DB and is
+    # unreachable from this endpoint -- it corrects itself within 30s when
+    # crm-engine's memo expires and its etag changes. Do not add an HTTP call
+    # to crm-engine for this.
+    try:
+        from app.services import cache_service as cache
+
+        cache.delete_prefix("colocation:")
+    except Exception:  # noqa: BLE001
+        logger.warning("cache invalidation after role-rule save failed", exc_info=True)
     return {"status": "ok", "etag": rules.etag}

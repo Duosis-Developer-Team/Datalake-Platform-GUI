@@ -44,6 +44,7 @@ from app.core.redis_client import (
     redis_is_healthy,
 )
 from app.routers import admin_cache, crm_config, inventory, sellable, service_mapping
+from app.services.colocation_role_rule_service import ColocationRoleRuleService
 from app.services.crm_config_service import CrmConfigService
 from app.services.currency_service import CurrencyService
 from app.services.customer_service import CustomerService
@@ -207,6 +208,10 @@ async def lifespan(app: FastAPI):
         datacenter_redis=dc_redis,
         datacenter_api_url=_DATACENTER_API_URL,
         crm_redis=crm_redis,
+        # Same webui table customer-api writes; crm-engine picks up an operator's
+        # change within the service's 30s memo window. There is no cross-service
+        # invalidation call -- the rule etag in the cache key does that work.
+        role_rules_service=ColocationRoleRuleService(webui, svc),
     )
     app.state.crm_config = config_svc
     app.state.currency = currency_svc

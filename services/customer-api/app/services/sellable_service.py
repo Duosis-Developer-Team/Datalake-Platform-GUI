@@ -443,6 +443,7 @@ from app.services.tagging_service import TaggingService, build_metric_key
 from app.services.webui_db import WebuiPool
 from shared.colocation import allocation as coloc_alloc
 from shared.colocation import occupancy as coloc_occ
+from shared.colocation.role_rules import DEFAULT_RULES, RoleRules
 from shared.licensing import os_sql
 from shared.sellable.computation import (
     StorageInTripleOverride,
@@ -495,6 +496,7 @@ class SellableService:
         datacenter_redis: "_redis_t.Redis | None" = None,
         datacenter_api_url: str = "",
         crm_redis: "_redis_t.Redis | None" = None,
+        role_rules_service=None,
     ) -> None:
         self._svc = customer_service
         self._webui = webui
@@ -504,6 +506,7 @@ class SellableService:
         self._dc_redis = datacenter_redis
         self._dc_api_url = (datacenter_api_url or "").rstrip("/")
         self._crm_redis = crm_redis  # crm-engine's own Redis (DB 2) for result caching
+        self._rules_svc = role_rules_service
 
     # ----------------------------------------------------------------- helpers
 
@@ -1586,6 +1589,20 @@ SELECT _tot, _alloc FROM latest
             )
             return 0.0, 0.0
 
+    def _role_rules(self) -> RoleRules:
+        """Operator-configured sellable rack roles, or the built-in default.
+
+        Never raises: a colocation panel must still compute if the config
+        service is missing, and DEFAULT_RULES is exactly today's behaviour.
+        """
+        if self._rules_svc is None:
+            return DEFAULT_RULES
+        try:
+            return self._rules_svc.load_rules()
+        except Exception:  # noqa: BLE001
+            logger.warning("role rules load failed; using defaults", exc_info=True)
+            return DEFAULT_RULES
+
     def _query_colocation_totals(self, src, dc_code: str) -> tuple[float, float]:
         """dc_hosting_u total/allocated from the shared occupancy module.
 
@@ -1612,7 +1629,7 @@ SELECT _tot, _alloc FROM latest
         except Exception as exc:  # noqa: BLE001
             logger.warning("colocation totals query failed for %s: %s", dc_code, exc)
             return 0.0, 0.0
-        return coloc_alloc.sellable_rack_totals(rows)
+        return coloc_alloc.sellable_rack_totals(rows, self._role_rules())
 
     def _query_licensed_os_totals(self, src, dc_code: str) -> tuple[float, float]:
         """Detected guest count backing a licence / OS-management panel.
@@ -4115,11 +4132,16 @@ SELECT _tot, _alloc FROM latest
         dc_code: str,
         selected_clusters: list[str] | None,
         family: str | None,
+        rules_etag: str = "",
     ) -> str:
         clusters_part = ""
         if selected_clusters:
             clusters_part = ",".join(sorted(c for c in selected_clusters if c))
-        return f"sellable:panels:{dc_code or '*'}:{family or '*'}:{clusters_part}"
+        base = f"sellable:panels:{dc_code or '*'}:{family or '*'}:{clusters_part}"
+        # Rack-role rules change what dc_hosting_u totals mean, so they are part
+        # of the key's identity -- see ColocationMatchingService._cache_key for
+        # why an etag beats flushing alone.
+        return f"{base}:{rules_etag}" if rules_etag else base
 
     @staticmethod
     def _panel_results_total_tl(results: "list[PanelResult]") -> float:
@@ -4319,7 +4341,9 @@ SELECT _tot, _alloc FROM latest
         )
 
         # 1. Tier-1 Redis result cache lookup.
-        cache_key = self._result_cache_key(dc_code, selected_clusters, family)
+        cache_key = self._result_cache_key(
+            dc_code, selected_clusters, family, rules_etag=self._role_rules().etag
+        )
         if force_recompute:
             logger.info(
                 "compute_all_panels: force_recompute=True dc=%s family=%s clusters=%s",
