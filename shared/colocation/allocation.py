@@ -31,6 +31,32 @@ from typing import Any, Sequence
 # upstream and compare numerically, the column itself never guarantees that.
 COLOCATION_ROLE_IDS = frozenset({"3", "4"})
 
+# Roles whose free U is NOT sellable inventory. Customer request 2026-08-04:
+# "kabinlerde customer cabinetler U hesaplamasında dışarda tutulmalı" +
+# "network kabinide aynı şekilde". Colocation racks (3/4) belong to a
+# customer, so their free U is theirs; a NETWORK rack (1) holds switching
+# gear the platform can never rent out. Measured against prod bulutlake
+# 2026-08-04 over 188 de-duplicated racks / 8,603 U: excluding role 1 as well
+# moves sellable free U from 4,477 to 3,611.
+#
+# This is deliberately a SEPARATE set from COLOCATION_ROLE_IDS, not a widening
+# of it. The two answer different questions -- "allocated to which customer"
+# vs "can this space be sold" -- and a network rack answers the second without
+# answering the first. Merging them would file network racks under an
+# Unattributed colocation customer and invent an allocation that does not
+# exist.
+NETWORK_ROLE_IDS = frozenset({"1"})
+NON_SELLABLE_ROLE_IDS = COLOCATION_ROLE_IDS | NETWORK_ROLE_IDS
+
+# loki_racks.role_name, for display only — the breakdown the page shows when
+# someone asks why sellable free U is smaller than total free U.
+ROLE_NAMES: dict[str, str] = {
+    "1": "NETWORK",
+    "2": "HOST",
+    "3": "NON-STANDART",
+    "4": "CUSTOMER",
+}
+
 # Bucket for a colocation-role rack whose customer name resolves to nothing
 # in any of tenant_name / tags / description. 6 such racks exist in prod
 # today (2026-07-27, per the design doc); they must be counted here -- never
@@ -70,6 +96,49 @@ def is_colocation_rack(role_id: Any) -> bool:
     if role_id is None:
         return False
     return str(role_id).strip() in COLOCATION_ROLE_IDS
+
+
+def is_network_rack(role_id: Any) -> bool:
+    """True when ``role_id`` names a NETWORK RACK (role 1)."""
+    if role_id is None:
+        return False
+    return str(role_id).strip() in NETWORK_ROLE_IDS
+
+
+def is_sellable_rack(role_id: Any) -> bool:
+    """True when free U in this rack can be sold to a new customer.
+
+    False for roles 1/3/4 (see NON_SELLABLE_ROLE_IDS). An absent or
+    unrecognised role is treated as SELLABLE, not as network: role_id is 100%
+    populated in discovery_loki_rack, so the only callers that reach here
+    without one are the informational aggregates that carry no role data at
+    all (the Floor Map occupancy summary). Defaulting those to non-sellable
+    would silently zero their free U instead of leaving it unclassified.
+    """
+    if role_id is None:
+        return True
+    return str(role_id).strip() not in NON_SELLABLE_ROLE_IDS
+
+
+def sellable_rack_totals(rows: Sequence[dict]) -> tuple[float, float]:
+    """``(capacity_u, used_u)`` summed over sellable racks only.
+
+    This is the pair the sellable engine prices for ``dc_hosting_u``. Both
+    sides drop non-sellable racks: leaving their capacity in ``total`` while
+    counting their occupancy in ``allocated`` would inflate the CRM threshold
+    budget (``total × 80% − allocated``) with space that can never be sold,
+    which produces a *different* answer than simply not offering it. Measured
+    2026-08-04: all-racks 8,603/2,712 yields 4,170.4 sellable U, sellable-only
+    4,894/1,283 yields 2,632.2 U.
+    """
+    capacity = 0
+    used = 0
+    for row in rows or []:
+        if not is_sellable_rack(row.get("role_id")):
+            continue
+        capacity += int(row.get("capacity_u") or 0)
+        used += int(row.get("used_u") or 0)
+    return float(capacity), float(used)
 
 
 def _parse_tags(tags: Any) -> list[dict]:
@@ -218,28 +287,69 @@ def aggregate_rack_allocations(rows: Sequence[dict]) -> dict:
 
       * ``colocation_allocated_u`` -- Σ capacity_u over every colocation-role
         rack (named + Unattributed), i.e. the whole colocation estate.
-      * ``sellable_free_u`` -- Σ free_u over racks that are NOT colocation-
-        role. Free U *inside* a colocation-role rack belongs to whichever
-        customer holds that rack, not to the platform's sellable pool --
-        this is the "free_u still means total free, this is the sellable
-        subset" field the design doc asks for, separate from ``free_u``
-        (unchanged, still the total across all racks).
+      * ``sellable_free_u`` -- Σ free_u over racks that are SELLABLE
+        (``is_sellable_rack``): not colocation-role and not NETWORK. Free U
+        *inside* a colocation-role rack belongs to whichever customer holds
+        that rack; free U in a network rack is switching space nobody can
+        rent. Separate from ``free_u`` (unchanged, still the total across all
+        racks).
+      * ``sellable_capacity_u`` / ``sellable_used_u`` -- the same subset's
+        capacity and occupancy, for callers that price headroom rather than
+        free space (see ``sellable_rack_totals``).
+      * ``network_free_u`` / ``network_capacity_u`` / ``network_rack_count``
+        -- the NETWORK slice, broken out so the page can show what it removed
+        instead of silently shrinking a number.
+      * ``role_breakdown`` -- one entry per role actually present, each with
+        role_id/role_name/sellable/rack_count/capacity_u/used_u/free_u.
+        Accounts for every rack, sellable or not.
 
-    A rack whose role_id doesn't resolve to colocation (``is_colocation_rack``
-    false) contributes only to ``sellable_free_u`` and is otherwise ignored
-    here -- this function has no opinion on non-colocation racks beyond that.
+    A rack that is not colocation-role is never named or bucketed by
+    customer; it contributes only to the platform-level totals above. In
+    particular a NETWORK rack is non-sellable WITHOUT belonging to anyone, so
+    it must not reach the per-customer view.
     """
     by_customer: dict[str, dict] = {}
     colocation_allocated_u = 0
     sellable_free_u = 0
+    sellable_capacity_u = 0
+    sellable_used_u = 0
+    network_free_u = 0
+    network_capacity_u = 0
+    network_rack_count = 0
+    by_role: dict[str, dict] = {}
     for row in rows or []:
         role_id = row.get("role_id")
-        if not is_colocation_rack(role_id):
-            sellable_free_u += int(row.get("free_u") or 0)
-            continue
-
         capacity = int(row.get("capacity_u") or 0)
         used = int(row.get("used_u") or 0)
+        free = int(row.get("free_u") or 0)
+
+        role_key = "" if role_id is None else str(role_id).strip()
+        bucket = by_role.get(role_key)
+        if bucket is None:
+            bucket = {
+                "role_id": role_key,
+                "role_name": ROLE_NAMES.get(role_key, "UNKNOWN"),
+                "sellable": is_sellable_rack(role_id),
+                "rack_count": 0, "capacity_u": 0, "used_u": 0, "free_u": 0,
+            }
+            by_role[role_key] = bucket
+        bucket["rack_count"] += 1
+        bucket["capacity_u"] += capacity
+        bucket["used_u"] += used
+        bucket["free_u"] += free
+
+        if is_sellable_rack(role_id):
+            sellable_free_u += free
+            sellable_capacity_u += capacity
+            sellable_used_u += used
+        elif is_network_rack(role_id):
+            network_free_u += free
+            network_capacity_u += capacity
+            network_rack_count += 1
+
+        if not is_colocation_rack(role_id):
+            continue
+
         colocation_allocated_u += capacity
 
         label = resolve_rack_customer_label(
@@ -262,8 +372,19 @@ def aggregate_rack_allocations(rows: Sequence[dict]) -> dict:
     customers = sorted(
         by_customer.values(), key=lambda e: (-e["allocated_u"], e["customer"])
     )
+    # Sellable first, then by size: the page reads this top-down as "here is
+    # what you can sell, here is what was taken out and why".
+    role_breakdown = sorted(
+        by_role.values(), key=lambda r: (not r["sellable"], -r["free_u"], r["role_id"])
+    )
     return {
         "customers": customers,
         "colocation_allocated_u": colocation_allocated_u,
         "sellable_free_u": sellable_free_u,
+        "sellable_capacity_u": sellable_capacity_u,
+        "sellable_used_u": sellable_used_u,
+        "network_free_u": network_free_u,
+        "network_capacity_u": network_capacity_u,
+        "network_rack_count": network_rack_count,
+        "role_breakdown": role_breakdown,
     }

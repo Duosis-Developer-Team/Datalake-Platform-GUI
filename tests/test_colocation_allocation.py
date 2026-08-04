@@ -45,6 +45,109 @@ def test_is_colocation_rack_tolerates_whitespace():
     assert alloc.is_colocation_rack(" 4 ") is True
 
 
+# --- Sellability gating (customer rule, 2026-08-04) --------------------
+# "kabinlerde customer cabinetler U hesaplamasında dışarda tutulmalı" +
+# "network kabinide aynı şekilde" -- roles 1/3/4 are not sellable inventory.
+
+def test_non_sellable_role_ids_are_network_plus_colocation():
+    assert alloc.NON_SELLABLE_ROLE_IDS == {"1", "3", "4"}
+    assert alloc.COLOCATION_ROLE_IDS <= alloc.NON_SELLABLE_ROLE_IDS
+
+
+def test_colocation_role_ids_unchanged_by_the_sellability_rule():
+    """The two sets answer different questions and must not be merged:
+    COLOCATION_ROLE_IDS = "allocated to which customer", NON_SELLABLE_ROLE_IDS
+    = "can this space be sold". A network rack is non-sellable but has no
+    colocation customer, so it must never enter the per-customer view."""
+    assert alloc.COLOCATION_ROLE_IDS == {"3", "4"}
+    assert alloc.is_colocation_rack("1") is False
+
+
+def test_is_sellable_rack_only_for_host_racks():
+    assert alloc.is_sellable_rack("2") is True     # HOST RACK
+    assert alloc.is_sellable_rack("1") is False    # NETWORK RACK
+    assert alloc.is_sellable_rack("3") is False    # NON-STANDART RACK
+    assert alloc.is_sellable_rack("4") is False    # CUSTOMER RACK
+    assert alloc.is_sellable_rack(2) is True
+    assert alloc.is_sellable_rack(" 1 ") is False
+
+
+def test_is_sellable_rack_treats_unknown_role_as_sellable():
+    """Callers that carry no role data at all (the Floor Map's informational
+    occupancy summary) must keep counting their free U -- an absent role is
+    "not classified", not "network". role_id is 100% populated in
+    discovery_loki_rack, so this only ever fires for role-less callers."""
+    assert alloc.is_sellable_rack(None) is True
+    assert alloc.is_sellable_rack("") is True
+    assert alloc.is_sellable_rack("not-a-role") is True
+
+
+def test_sellable_rack_totals_counts_only_sellable_racks():
+    """The pair the sellable engine prices: capacity/used over HOST racks
+    only. Non-sellable racks drop out of BOTH sides -- leaving their capacity
+    in `total` would inflate the 80% threshold budget with space we can never
+    sell."""
+    rows = [
+        {"role_id": "2", "capacity_u": 47, "used_u": 20},   # HOST
+        {"role_id": "1", "capacity_u": 47, "used_u": 30},   # NETWORK
+        {"role_id": "4", "capacity_u": 42, "used_u": 10},   # CUSTOMER
+        {"role_id": "3", "capacity_u": 42, "used_u": 5},    # NON-STANDART
+    ]
+    assert alloc.sellable_rack_totals(rows) == (47.0, 20.0)
+
+
+def test_sellable_rack_totals_empty():
+    assert alloc.sellable_rack_totals([]) == (0.0, 0.0)
+
+
+def test_aggregate_rack_allocations_role_breakdown_covers_every_role():
+    """The breakdown is what the page shows when someone asks "why is the
+    sellable number smaller than Free U" -- it must account for every rack,
+    sellable or not."""
+    rows = [
+        {"rack_name": "H1", "role_id": "2", "capacity_u": 47, "used_u": 20, "free_u": 27},
+        {"rack_name": "N1", "role_id": "1", "capacity_u": 47, "used_u": 30, "free_u": 17},
+        {"rack_name": "C1", "role_id": "4", "capacity_u": 42, "used_u": 10, "free_u": 32,
+         "tags": [], "description": "", "tenant_name": "Boyner"},
+    ]
+    out = alloc.aggregate_rack_allocations(rows)
+    by_role = {r["role_id"]: r for r in out["role_breakdown"]}
+    assert by_role["2"] == {"role_id": "2", "role_name": "HOST", "sellable": True,
+                            "rack_count": 1, "capacity_u": 47, "used_u": 20, "free_u": 27}
+    assert by_role["1"]["role_name"] == "NETWORK"
+    assert by_role["1"]["sellable"] is False
+    assert by_role["4"]["free_u"] == 32
+    # Every rack accounted for, nothing double counted.
+    assert sum(r["rack_count"] for r in out["role_breakdown"]) == 3
+    assert sum(r["free_u"] for r in out["role_breakdown"]) == 27 + 17 + 32
+
+
+def test_aggregate_rack_allocations_sellable_capacity_excludes_network():
+    rows = [
+        {"rack_name": "H1", "role_id": "2", "capacity_u": 47, "used_u": 20, "free_u": 27},
+        {"rack_name": "N1", "role_id": "1", "capacity_u": 47, "used_u": 30, "free_u": 17},
+    ]
+    out = alloc.aggregate_rack_allocations(rows)
+    assert out["sellable_capacity_u"] == 47
+    assert out["sellable_used_u"] == 20
+    assert out["network_free_u"] == 17
+    assert out["network_capacity_u"] == 47
+    assert out["network_rack_count"] == 1
+
+
+def test_network_rack_never_enters_the_customer_view():
+    """Regression: a network rack is non-sellable but belongs to nobody. If
+    the sellability rule leaked into the colocation gate it would show up as
+    an Unattributed colocation customer, inventing an allocation."""
+    rows = [
+        {"rack_name": "N1", "role_id": "1", "capacity_u": 47, "used_u": 30, "free_u": 17,
+         "tags": [], "description": "", "tenant_name": None},
+    ]
+    out = alloc.aggregate_rack_allocations(rows)
+    assert out["customers"] == []
+    assert out["colocation_allocated_u"] == 0
+
+
 def test_host_rack_with_tenant_name_is_not_colocation():
     """A HOST RACK (role 2) carrying a tenant_name must NOT be treated as
     colocation -- role gating and name resolution are independent checks."""
@@ -330,8 +433,9 @@ def test_aggregate_rack_allocations_colocation_allocated_u_totals_named_and_unat
 
 
 def test_aggregate_rack_allocations_sellable_free_u_excludes_colocation_racks():
-    """Design section 3: free U inside a colocation-role rack is not sellable
-    -- only free_u from NON-colocation racks counts toward sellable_free_u."""
+    """Design section 3 + customer rule 2026-08-04: free U inside a
+    colocation-role rack is not sellable, and neither is free U in a NETWORK
+    rack -- only HOST (and unknown-role) racks feed sellable_free_u."""
     rows = [
         {"rack_name": "R1", "role_id": "4", "tags": [], "description": "",
          "tenant_name": "Boyner", "capacity_u": 42, "used_u": 10, "free_u": 32},
@@ -341,13 +445,20 @@ def test_aggregate_rack_allocations_sellable_free_u_excludes_colocation_racks():
          "tenant_name": None, "capacity_u": 47, "used_u": 0, "free_u": 47},
     ]
     out = alloc.aggregate_rack_allocations(rows)
-    assert out["sellable_free_u"] == 27 + 47   # R1's 32 free U excluded
+    assert out["sellable_free_u"] == 27        # R1 (customer) AND R3 (network) excluded
+    assert out["network_free_u"] == 47
     assert out["colocation_allocated_u"] == 42
 
 
 def test_aggregate_rack_allocations_empty_rows():
     out = alloc.aggregate_rack_allocations([])
-    assert out == {"customers": [], "colocation_allocated_u": 0, "sellable_free_u": 0}
+    assert out["customers"] == []
+    assert out["colocation_allocated_u"] == 0
+    assert out["sellable_free_u"] == 0
+    assert out["network_free_u"] == 0
+    assert out["sellable_capacity_u"] == 0
+    assert out["sellable_used_u"] == 0
+    assert out["role_breakdown"] == []
 
 
 def test_aggregate_rack_allocations_sorted_by_allocated_u_descending():

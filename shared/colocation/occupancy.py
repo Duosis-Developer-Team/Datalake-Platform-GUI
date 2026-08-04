@@ -21,7 +21,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Sequence
 
-from shared.colocation.allocation import is_colocation_rack, resolve_rack_customer_label
+from shared.colocation.allocation import (
+    NETWORK_ROLE_IDS,
+    is_colocation_rack,
+    resolve_rack_customer_label,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +183,41 @@ def _resolve_colocation_identity(rack_name: Any, site_name: Any, colo_rows: list
     }
 
 
+def _resolve_non_colocation_role(rack_name: Any, site_name: Any, group: list[dict]) -> Any:
+    """Pick ``role_id`` for a physical rack whose duplicates hold no
+    colocation role -- i.e. the NETWORK/HOST split that
+    ``_resolve_colocation_identity`` never sees.
+
+    Unanimous (the overwhelming majority): that role, verbatim.
+
+    Split: the most restrictive role wins, which here means NETWORK over
+    HOST. Same reasoning as the colocation branch -- there is no authority
+    signal in the data, ``first_observed`` only says which record the
+    collector paginated first within one sub-second sweep -- but the
+    conclusion differs because the question differs. Identity cannot be
+    guessed (so a conflict becomes Unattributed), while sellability has a
+    safe side: 24 racks carry conflicting role_id in prod (2026-08-04), and
+    the defect being corrected is OVERstating sellable U, so a tie breaks
+    toward not selling. Logged either way so NetBox can be cleaned up; the
+    ambiguity is a data problem this rule contains, not one it fixes.
+    """
+    roles = {
+        str(r.get("role_id")).strip()
+        for r in group
+        if r.get("role_id") is not None and str(r.get("role_id")).strip()
+    }
+    if len(roles) <= 1:
+        return next(iter(roles), group[0].get("role_id"))
+
+    winner = "1" if roles & NETWORK_ROLE_IDS else sorted(roles)[0]
+    logger.warning(
+        "rack role conflict for rack %r/%r: %d duplicates disagree on role_id "
+        "(%s) -- resolving to %r (most restrictive wins; correct in NetBox).",
+        rack_name, site_name, len(group), sorted(roles), winner,
+    )
+    return winner
+
+
 def _dedupe_physical_racks(rows: Sequence[dict]) -> list[dict]:
     """Collapse duplicate ``discovery_loki_rack`` entries for the same physical
     rack so used/free U are not inflated.
@@ -199,11 +238,18 @@ def _dedupe_physical_racks(rows: Sequence[dict]) -> list[dict]:
     Task B) -- capacity_u/used_u/free_u/tenants/dc never depend on which
     duplicate (if any) is colocation-role. Only role_id/tags/description/
     tenant_name are resolved separately, via ``_resolve_colocation_identity``
-    for the subset of duplicates that are colocation-role (3/4); a rack with
-    no colocation-role duplicate keeps an arbitrary (first-encountered, like
-    the existing rack_id/hall fields) role_id/tags/description/tenant_name,
-    which is never read since ``is_colocation_rack`` gates entry into the
-    allocation aggregation.
+    for the subset of duplicates that are colocation-role (3/4), and via
+    ``_resolve_non_colocation_role`` for the rest.
+
+    role_id is ALWAYS resolved by rule, never left to row order. It used to
+    fall out of ``base = dict(group[0])`` for racks with no colocation-role
+    duplicate, which was safe only while ``is_colocation_rack`` gated every
+    read of it. It no longer is: NETWORK racks (role 1) are excluded from
+    sellable U as of 2026-08-04, so an arbitrary pick between a NETWORK and a
+    HOST duplicate would change the priced number between two runs over
+    identical data. tags/description/tenant_name stay first-encountered for
+    non-colocation racks -- those genuinely are never read outside the
+    colocation branch.
     """
     groups: dict[tuple, list[dict]] = {}
     order: list[tuple] = []
@@ -242,6 +288,8 @@ def _dedupe_physical_racks(rows: Sequence[dict]) -> list[dict]:
         colo_rows = [r for r in group if is_colocation_rack(r.get("role_id"))]
         if colo_rows:
             base.update(_resolve_colocation_identity(key[0], key[1], colo_rows))
+        else:
+            base["role_id"] = _resolve_non_colocation_role(key[0], key[1], group)
 
         out.append(base)
     return out

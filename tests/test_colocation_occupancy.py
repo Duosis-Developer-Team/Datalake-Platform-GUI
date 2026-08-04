@@ -277,6 +277,73 @@ def test_dedupe_conflict_not_decided_by_role_id_or_capacity_magnitude():
         assert row["capacity_u"] == 90   # still plain MAX, independent of which "wins" identity
 
 
+def test_dedupe_non_colocation_role_conflict_resolves_to_network_deterministically():
+    """A rack whose duplicates disagree between NETWORK (1) and HOST (2) has
+    no colocation-role row, so _resolve_colocation_identity never runs and
+    role_id used to fall out of ``base = dict(group[0])`` -- i.e. whichever
+    duplicate the DB happened to paginate first. Measured 2026-08-04: 24
+    racks carry conflicting role_id and 5 of them (101/102/103/108/201,
+    107 U) flipped between consecutive runs.
+
+    That was harmless while role_id only gated colocation identity. Once
+    NETWORK is non-sellable the same coin-flip moves money, so the tie is
+    resolved by rule: the most restrictive role any duplicate claims wins.
+    Rationale -- there is no authority signal in the data (first_observed is
+    the same sub-second sweep), and the failure we are correcting is
+    OVERstating sellable capacity, so ties break toward not selling."""
+    network = _row("net-101", "101", "DC13", "H1", 47, 30, 17, [], "ISTANBUL",
+                   "1", [], "", None)
+    host = _row("host-101", "101", "DC13", "H2", 47, 30, 17, [], "ISTANBUL",
+                "2", [], "", None)
+
+    forward = occ.occupancy_rows(_FakeCursor([network, host]), dc_pattern=None)[0]
+    backward = occ.occupancy_rows(_FakeCursor([host, network]), dc_pattern=None)[0]
+
+    assert forward["role_id"] == "1"
+    assert backward["role_id"] == "1"
+    assert forward["capacity_u"] == backward["capacity_u"] == 47
+
+
+def test_dedupe_unanimous_non_colocation_role_is_preserved():
+    """No conflict, no rule: two HOST duplicates stay HOST."""
+    a = _row("a", "H9", "DC13", "H1", 47, 20, 27, [], "ISTANBUL", "2", [], "", None)
+    b = _row("b", "H9", "DC13", "H2", 42, 10, 32, [], "ISTANBUL", "2", [], "", None)
+    row = occ.occupancy_rows(_FakeCursor([a, b]), dc_pattern=None)[0]
+    assert row["role_id"] == "2"
+    assert row["capacity_u"] == 47
+
+
+def test_dedupe_colocation_role_still_beats_network_in_a_three_way_conflict():
+    """Precedence order is 4 > 3 > 1 > 2. A group holding NETWORK and
+    CUSTOMER duplicates must stay CUSTOMER, because the colocation branch
+    also carries the customer's identity -- demoting it to NETWORK would
+    keep the U out of the sellable pool (same money) but lose the customer
+    attribution (different screen)."""
+    network = _row("net-306", "306", "DC13", "H1", 47, 0, 47, [], "ISTANBUL",
+                   "1", [], "", None)
+    customer = _row("cust-306", "306", "DC13", "H2", 47, 0, 47, [], "ISTANBUL",
+                    "4", [], "BOYNER", None)
+    forward = occ.occupancy_rows(_FakeCursor([network, customer]), dc_pattern=None)[0]
+    backward = occ.occupancy_rows(_FakeCursor([customer, network]), dc_pattern=None)[0]
+    for row in (forward, backward):
+        assert row["role_id"] == "4"
+        assert resolve_rack_customer_label(
+            row["tenant_name"], row["tags"], row["description"]
+        ) == "BOYNER"
+
+
+def test_dedupe_non_colocation_role_conflict_is_logged(caplog):
+    network = _row("net-101", "101", "DC13", "H1", 47, 30, 17, [], "ISTANBUL",
+                   "1", [], "", None)
+    host = _row("host-101", "101", "DC13", "H2", 47, 30, 17, [], "ISTANBUL",
+                "2", [], "", None)
+    with caplog.at_level("WARNING"):
+        occ.occupancy_rows(_FakeCursor([network, host]), dc_pattern=None)
+    messages = [r.getMessage() for r in caplog.records]
+    assert len(messages) == 1
+    assert "101" in messages[0] and "ISTANBUL" in messages[0]
+
+
 def test_dedupe_two_colocation_duplicates_agreeing_on_customer_uses_it():
     """Two colocation-role duplicates that happen to resolve to the SAME
     customer (e.g. differing only in capacity/hall) are not a conflict --
