@@ -340,6 +340,16 @@ class NetboxVizExclusionUpsert(BaseModel):
     notes: Optional[str] = None
 
 
+class ColocationRoleRuleItem(BaseModel):
+    role_id: str
+    sellable: bool
+
+
+class ColocationRoleRulesUpdate(BaseModel):
+    rules: List[ColocationRoleRuleItem]
+    notes: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Customer catalog (/customers page)
 # ---------------------------------------------------------------------------

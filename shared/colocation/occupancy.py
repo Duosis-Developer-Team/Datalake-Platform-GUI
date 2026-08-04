@@ -23,6 +23,7 @@ from typing import Any, Sequence
 
 from shared.colocation.allocation import (
     NETWORK_ROLE_IDS,
+    ROLE_NAMES,
     is_colocation_rack,
     resolve_rack_customer_label,
 )
@@ -517,3 +518,54 @@ def used_u_breakdown(
     """
     cursor.execute(USED_U_BREAKDOWN_SQL, {"dc_pattern": dc_pattern})
     return _classify_slots(cursor.fetchall() or [], internal_prefixes)
+
+
+# --- Loki rack role catalogue ------------------------------------------------
+# The Colocation Configuration screen lists the roles that actually exist in the
+# live data, so a 5th role added in Loki shows up on the screen by itself
+# instead of silently joining the sellable pool as an unconfigured role.
+#
+# Source is discovery_loki_rack, NOT loki_racks: the loki_* timeseries stopped
+# collecting on 2026-04-12 (see this module's docstring) and would show a role
+# set that is nearly four months stale. discovery_loki_rack carries no
+# role_name, so the display name comes from allocation.ROLE_NAMES and unknown
+# ids fall back to "UNKNOWN" -- which is exactly the signal the operator needs.
+ROLE_CATALOG_SQL = """
+SELECT role_id::text AS role_id,
+       COUNT(*)      AS rack_rows
+FROM   discovery_loki_rack
+WHERE  role_id IS NOT NULL
+GROUP BY role_id
+ORDER BY role_id
+"""
+
+
+def role_catalog(cursor) -> list[dict]:
+    """``[{role_id, role_name, rack_rows}]`` for every role present in the data.
+
+    role_id is cast to text for the same reason allocation.py compares it as a
+    string: discovery_loki_rack.role_id is a varchar and the two sides must
+    agree, or a rule keyed "4" never matches a catalogue entry of 4.
+
+    ``rack_rows`` counts RAW rows, not de-duplicated physical racks -- it is
+    only here so a role with zero live racks is visibly distinguishable from
+    one that carries inventory. Do not display it as a rack count; the screen
+    takes its rack/capacity/free numbers from the aggregate's role_breakdown,
+    which is post-dedupe.
+
+    Builds its dicts inline rather than through row_to_dict(): that helper maps
+    tuples POSITIONALLY onto OCCUPANCY_COLUMNS, so a two-column result would
+    come back labelled rack_id/rack_name.
+    """
+    cursor.execute(ROLE_CATALOG_SQL)
+    out: list[dict] = []
+    for row in cursor.fetchall() or []:
+        role_key = str(row[0] or "").strip()
+        if not role_key:
+            continue
+        out.append({
+            "role_id": role_key,
+            "role_name": ROLE_NAMES.get(role_key, "UNKNOWN"),
+            "rack_rows": int(row[1] or 0),
+        })
+    return out
