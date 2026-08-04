@@ -231,9 +231,16 @@ LIMIT 1;
 # ---------------------------------------------------------------------------
 
 CATALOG_TL_PRICE_FOR_PRODUCT = """
-SELECT ppl.amount, pl.transactioncurrency_text, ppl.uomid_name
+SELECT ppl.amount,
+       pl.transactioncurrency_text,
+       COALESCE(
+           NULLIF(TRIM(ppl.uomid_name), ''),
+           NULLIF(TRIM(p.defaultuomid_name), ''),
+           ''
+       ) AS price_unit
 FROM   discovery_crm_productpricelevels ppl
 JOIN   discovery_crm_pricelevels        pl  ON pl.pricelevelid = ppl.pricelevelid
+JOIN   discovery_crm_products           p   ON p.productid = ppl.productid
 WHERE  ppl.productid = %s
 ORDER BY (
            pl.transactioncurrency_text IN ('TL', 'Turkish Lira', 'TRY')
