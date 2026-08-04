@@ -11,7 +11,7 @@ from dash.exceptions import PreventUpdate
 from src.auth.permission_service import can_view
 from src.pages.settings.integrations.colocation_config import COLOCATION_ROLE_IDS
 from src.services import api_client as api
-from src.utils.colocation_config_ui import preview_sellable_free_u
+from src.utils.colocation_config_ui import preview_sellable_free_u, render_sellable_total
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +55,7 @@ def preview(values, ids, store, user_store):
     ov = _overrides(ids, values)
     saved = preview_sellable_free_u(merged, {})
     pending = preview_sellable_free_u(merged, ov)
-    if pending == saved:
-        return f"Sellable free U: {_fmt(saved)}"
-    return f"Sellable free U: {_fmt(saved)}  →  kaydedince: {_fmt(pending)}"
+    return render_sellable_total(saved, pending)
 
 
 @callback(

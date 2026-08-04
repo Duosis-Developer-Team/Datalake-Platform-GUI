@@ -6,6 +6,19 @@ from typing import Any, Mapping, Sequence
 
 import dash_mantine_components as dmc
 from dash import html
+from dash_iconify import DashIconify
+
+from src.utils.ui_tokens import PRIMARY, th_center, th_left, th_right
+
+# Fixed column widths (px) so the table hugs its content instead of
+# sprawling across a wide settings card with uneven gaps.
+_COL_WIDTHS = {
+    "role": "320px",
+    "racks": "90px",
+    "capacity": "120px",
+    "free": "110px",
+    "sellable": "110px",
+}
 
 
 def merge_rules_with_catalog(
@@ -58,30 +71,80 @@ def preview_sellable_free_u(
     return total
 
 
-def build_role_table(merged: Sequence[Mapping[str, Any]]) -> dmc.Table:
-    """Rol tablosu; her satırda pattern-matching id taşıyan bir Switch."""
+def fmt_u(n: int) -> str:
+    """Binlik ayraçlı U sayısı: 3503 -> '3.503'."""
+    return f"{int(n):,}".replace(",", ".")
+
+
+def render_sellable_total(saved: int, pending: int):
+    """`#coloc-cfg-preview` içeriği.
+
+    Değişmemişse tek büyük sayı; switch'ler henüz kaydedilmemiş bir
+    değişikliği işaret ediyorsa mevcut -> yeni değer + fark birlikte
+    gösterilir. Bu, ekranın var olma sebebi olan sayı olduğu için kartın
+    en güçlü görsel unsuru bu olmalı -- Kaydet butonundan daha belirgin.
+    """
+    if pending == saved:
+        return dmc.Text(fmt_u(saved), fw=800, size="32px", c="indigo", style={"lineHeight": 1.1})
+    diff = pending - saved
+    sign = "+" if diff >= 0 else "−"
+    diff_color = "teal" if diff >= 0 else "red"
+    return dmc.Group(gap=10, align="baseline", wrap="wrap", children=[
+        dmc.Text(fmt_u(saved), fw=500, size="lg", c="dimmed", style={"textDecoration": "line-through"}),
+        DashIconify(icon="solar:arrow-right-bold", width=18, color=PRIMARY),
+        dmc.Text(fmt_u(pending), fw=800, size="32px", c="indigo", style={"lineHeight": 1.1}),
+        dmc.Badge(f"{sign}{fmt_u(abs(diff))}", color=diff_color, variant="light", size="sm"),
+    ])
+
+
+def build_role_table(merged: Sequence[Mapping[str, Any]]) -> html.Div:
+    """Rol tablosu; her satırda pattern-matching id taşıyan bir Switch.
+
+    Header/hücre dili src.utils.ui_tokens (th_left/center/right) -- ayar
+    ekranlarında (bkz. netbox_viz_ui.build_exclusion_table, iam/roles.py)
+    kullanılan ortak tablo idiomu. Sayısal sütunlar sağa, rol adı sola
+    hizalı; Sellable switch sütunu sabit genişlikte ortalanır ki satır
+    genişledikçe kenara sürüklenmesin.
+    """
     head = html.Thead(html.Tr([
-        html.Th("Role"), html.Th("Racks"), html.Th("Capacity U"),
-        html.Th("Free U"), html.Th("Sellable?"),
+        html.Th("Role", style={**th_left(), "width": _COL_WIDTHS["role"]}),
+        html.Th("Racks", style={**th_right(), "width": _COL_WIDTHS["racks"]}),
+        html.Th("Capacity U", style={**th_right(), "width": _COL_WIDTHS["capacity"]}),
+        html.Th("Free U", style={**th_right(), "width": _COL_WIDTHS["free"]}),
+        html.Th("Sellable?", style={**th_center(), "width": _COL_WIDTHS["sellable"]}),
     ]))
     rows = []
     for row in merged:
         label = f"{row['role_name']} ({row['role_id']})"
         cells = [
-            html.Td(dmc.Group(gap=6, children=[
-                dmc.Text(label, size="sm"),
-                dmc.Badge("yeni — karar verilmedi", color="orange", variant="light", size="xs")
-                if row.get("is_new") else None,
-            ])),
-            html.Td(f"{row['rack_count']:,}".replace(",", ".")),
-            html.Td(f"{row['capacity_u']:,}".replace(",", ".")),
-            html.Td(f"{row['free_u']:,}".replace(",", ".")),
-            html.Td(dmc.Switch(
-                id={"type": "coloc-cfg-switch", "role": row["role_id"]},
-                checked=bool(row["sellable"]),
-                size="sm",
-                color="indigo",
-            )),
+            html.Td(
+                dmc.Stack(gap=4, children=[
+                    dmc.Text(label, size="sm", fw=500),
+                    dmc.Badge("yeni — karar verilmedi", color="orange", variant="light", size="xs")
+                    if row.get("is_new") else None,
+                ]),
+                style={"padding": "10px 12px"},
+            ),
+            html.Td(fmt_u(row["rack_count"]), style={"padding": "10px 12px", "textAlign": "right"}),
+            html.Td(fmt_u(row["capacity_u"]), style={"padding": "10px 12px", "textAlign": "right"}),
+            html.Td(fmt_u(row["free_u"]), style={"padding": "10px 12px", "textAlign": "right"}),
+            html.Td(
+                dmc.Switch(
+                    id={"type": "coloc-cfg-switch", "role": row["role_id"]},
+                    checked=bool(row["sellable"]),
+                    size="sm",
+                    color="indigo",
+                ),
+                style={"padding": "10px 12px", "textAlign": "center"},
+            ),
         ]
-        rows.append(html.Tr(cells))
-    return dmc.Table(children=[head, html.Tbody(rows)], striped=True, highlightOnHover=True)
+        rows.append(html.Tr(cells, style={"borderBottom": "1px solid #eef1f4"}))
+    table = dmc.Table(
+        children=[head, html.Tbody(rows)],
+        striped=True,
+        highlightOnHover=True,
+        withTableBorder=False,
+        withColumnBorders=False,
+        style={"tableLayout": "fixed", "width": "750px"},
+    )
+    return html.Div(table, style={"overflowX": "auto"})

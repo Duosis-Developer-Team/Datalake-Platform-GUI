@@ -15,6 +15,7 @@ from src.utils.colocation_config_ui import (
     build_role_table,
     merge_rules_with_catalog,
     preview_sellable_free_u,
+    render_sellable_total,
 )
 from src.utils.ui_tokens import card_style, section_header, settings_page_shell
 
@@ -74,9 +75,15 @@ def build_layout(search: str | None = None) -> html.Div:
         dmc.Paper(
             children=[
                 html.Div(id="coloc-cfg-table", children=build_role_table(merged)),
-                dmc.Group(justify="space-between", align="center", mt="md", children=[
-                    dmc.Text(id="coloc-cfg-preview", size="sm", fw=600,
-                             children=f"Sellable free U: {current:,}".replace(",", ".")),
+                dmc.Divider(mt="lg", mb="md"),
+                dmc.Group(justify="space-between", align="center", children=[
+                    dmc.Stack(gap=2, children=[
+                        dmc.Text(
+                            "SELLABLE FREE U", size="xs", fw=700, c="dimmed",
+                            style={"letterSpacing": "0.06em"},
+                        ),
+                        html.Div(id="coloc-cfg-preview", children=render_sellable_total(current, current)),
+                    ]),
                     dmc.Button(
                         "Kaydet",
                         id="coloc-cfg-save",

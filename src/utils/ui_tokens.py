@@ -35,6 +35,10 @@ def th_center() -> dict[str, Any]:
     return {**_TH_STYLE_BASE, "textAlign": "center"}
 
 
+def th_right() -> dict[str, Any]:
+    return {**_TH_STYLE_BASE, "textAlign": "right"}
+
+
 def card_style(
     *,
     border_left: str | None = None,
