@@ -3148,6 +3148,51 @@ def _invalidate_netbox_viz_caches() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Colocation sellable rack-role rules
+# ---------------------------------------------------------------------------
+
+
+def get_colocation_role_rules() -> dict[str, Any]:
+    def fetch() -> dict[str, Any]:
+        data = _get_json(_get_client_cust(), "/api/v1/colocation/role-rules")
+        return data if isinstance(data, dict) else {}
+
+    return _api_cache_get_with_stale("api:colocation_role_rules", fetch, {})
+
+
+def put_colocation_role_rules(
+    rules: list[dict[str, Any]], notes: Optional[str] = None
+) -> dict[str, Any]:
+    body: dict[str, Any] = {"rules": rules}
+    if notes is not None:
+        body["notes"] = notes
+    out = _put_json(_get_client_cust(), "/api/v1/colocation/role-rules", body)
+    _invalidate_colocation_rule_caches()
+    return out if isinstance(out, dict) else {}
+
+
+def _invalidate_colocation_rule_caches() -> None:
+    """Drop every GUI-cached number the rack-role rules feed.
+
+    The customer-api side is already correct on its own (the rule etag is part
+    of its cache keys), but the GUI keeps its own response cache in front of
+    it -- without this the screen keeps serving the pre-save number.
+    """
+    for prefix in (
+        "api:colocation_role_rules",
+        "api:colocation",
+        "api:dc_racks_",
+        "api:sellable_summary:",
+        "api:sellable_by_panel:",
+        "api:sellable_by_family:",
+    ):
+        try:
+            _api_response_cache.delete_prefix(prefix)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Sellable Potential dashboard endpoints (customer-api FAZ 5)
 # ---------------------------------------------------------------------------
 
