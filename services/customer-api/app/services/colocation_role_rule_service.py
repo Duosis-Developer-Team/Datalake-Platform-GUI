@@ -70,20 +70,26 @@ class ColocationRoleRuleService:
         Full-set writes, not per-role: a partial write leaves roles the screen
         showed as "off" absent from the table, and an absent role reads back
         as sellable -- the saved state would not match what the operator saw.
+
+        All UPSERTs go through one execute_all() call so they commit as a
+        single transaction: a connection drop mid-write must not leave the
+        table holding a mix of old and new role values.
         """
         if not self.is_available:
             raise RuntimeError("WebUI configuration DB not available")
         seen: set[str] = set()
+        statements: list[tuple[str, tuple[Any, ...]]] = []
         for item in rules or []:
             raw = item.get("role_id")
             key = "" if raw is None else str(raw).strip()
             if not key or key in seen:
                 continue
             seen.add(key)
-            self._webui.execute(
+            statements.append((
                 cq.UPSERT_ROLE_RULE,
                 (key, bool(item.get("sellable")), notes, updated_by or "api"),
-            )
+            ))
+        self._webui.execute_all(statements)
         self.invalidate_memo()
         return self.load_rules()
 

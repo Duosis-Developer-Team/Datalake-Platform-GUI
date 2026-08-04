@@ -17,6 +17,12 @@ class _FakeWebui:
         self.executed.append(params)
         return 1
 
+    def execute_all(self, statements):
+        statements = list(statements)
+        for _sql, params in statements:
+            self.executed.append(params)
+        return len(statements)
+
 
 def test_unavailable_webui_falls_back_to_default_rules():
     """webui kapalıyken bugünkü kural seti uygulanmalı.
