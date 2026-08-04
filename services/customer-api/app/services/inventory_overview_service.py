@@ -1573,6 +1573,27 @@ class InventoryOverviewService:
             else:
                 free_tl_out = _value_tl_from_catalog_price(free_out, **price_kw)
             unsold_tl_out = _value_tl_from_catalog_price(unsold_out, **price_kw)
+        # Inventory presentation: S3 Free (physical empty) is the sellable capacity.
+        # Utilization-gate sellable on PanelResult may be 0; do not change the engine —
+        # only surface free as sellable on the inventory row.
+        potential_tl_out = panel.potential_tl
+        if (
+            inventory_free_mode == "physical"
+            and family_key == "storage_s3"
+            and panel.has_infra_source
+            and free_out is not None
+        ):
+            sellable_out = float(free_out)
+            if free_tl_out is not None:
+                potential_tl_out = float(free_tl_out)
+            elif panel.has_price:
+                potential_tl_out = _value_tl_from_catalog_price(
+                    free_out,
+                    unit_price_tl=panel.unit_price_tl,
+                    has_price=panel.has_price,
+                    qty_unit=display_unit,
+                    price_unit=str(panel.unit_price_unit or display_unit),
+                )
         # Surface IBM-style alternate min/max on replication rows.
         sellable_min = panel.sellable_min if used_is_allocation else None
         sellable_max = panel.sellable_max if used_is_allocation else None
@@ -1594,7 +1615,7 @@ class InventoryOverviewService:
             "free_tl": free_tl_out,
             "unsold_qty": unsold_out,
             "unsold_tl": unsold_tl_out,
-            "potential_tl": panel.potential_tl,
+            "potential_tl": potential_tl_out,
             "has_infra_source": panel.has_infra_source,
             "has_price": panel.has_price,
             "status": status,

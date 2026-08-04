@@ -1248,7 +1248,57 @@ def test_site_scoped_panels_not_summed_across_dcs():
     assert ank["inventory_free_mode"] == "physical"
     assert ank["free_qty"] == 60.0
     assert ank["free_tl"] == 6000.0
+    # Inventory surfaces Free as sellable for S3 (gate sellable may differ).
+    assert ank["sellable_qty"] == 60.0
+    assert ank["potential_tl"] == 6000.0
     sellable.compute_site_scoped_panels.assert_called_once()
+
+
+def test_s3_inventory_sellable_equals_physical_free_when_gate_zero():
+    """Gate sellable_constrained=0 must not hide S3 free as inventory sellable."""
+    sellable = MagicMock()
+    sellable.is_available = True
+    ank_site = _panel(
+        panel_key="storage_s3_ankara",
+        label="IBM ICOS S3 — Ankara",
+        family="storage_s3",
+        resource_kind="storage",
+        display_unit="TB",
+        total=100.0,
+        allocated=90.0,
+        sellable_constrained=0.0,
+        potential_tl=0.0,
+        unit_price_tl=100.0,
+        unit_price_unit="TB",
+        has_price=True,
+        computation_mode="aggregated",
+    )
+    sellable.compute_all_panels.return_value = []
+    sellable.compute_site_scoped_panels.return_value = [ank_site]
+    sellable.recompute_family_constraints.side_effect = _recompute_panels
+    sellable._count_unmapped_products.return_value = 0
+    _stub_netbackup_metrics(sellable)
+
+    sales = MagicMock()
+    sales._run_query.return_value = []
+    webui = MagicMock()
+    webui.is_available = True
+    webui.run_rows.side_effect = lambda sql: (
+        [{"panel_key": "storage_s3_ankara"}]
+        if "storage_s3_%" in sql
+        else _webui_rows(sql)
+    )
+    config = MagicMock()
+    config.get_calc_dict.return_value = {"efficiency.under_pct": 80.0, "efficiency.over_pct": 110.0}
+    svc = InventoryOverviewService(
+        sellable=sellable, sales=sales, webui=webui, config=config, crm_redis=None,
+    )
+    payload = svc.compute_inventory_overview("*")
+    ank = next(p for p in payload["panels"] if p["panel_key"] == "storage_s3_ankara")
+    assert ank["free_qty"] == 10.0
+    assert ank["free_tl"] == 1000.0
+    assert ank["sellable_qty"] == 10.0
+    assert ank["potential_tl"] == 1000.0
 
 
 def test_assess_data_quality_flags_unit_conversion_missing():

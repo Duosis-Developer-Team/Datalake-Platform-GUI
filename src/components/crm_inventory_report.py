@@ -72,6 +72,11 @@ _FREE_COLUMN_TOOLTIP = (
     "CRM Sold düşülmez. Unsold = Total − CRM Sold."
 )
 
+_S3_FREE_COLUMN_TOOLTIP = (
+    "Free = satılabilir boş kapasite (Total − Used), katalog birim fiyatı ile. "
+    "CRM Sold düşülmez. Unsold = Total − CRM Sold."
+)
+
 _NETBACKUP_FREE_TOOLTIP = (
     "Free = boş havuz kapasitesi (available space). CRM Sold düşülmez. "
     "Unsold = Total − CRM Sold."
@@ -248,6 +253,31 @@ _ZERO_SELLABLE_HINTS = {
 def _sellable_zero_hint(reason: str) -> str:
     """Human explanation for a virt row whose sellable is 0 (so it isn't read as a bug)."""
     return _ZERO_SELLABLE_HINTS.get((reason or "").strip(), "kapasite/oran kısıtı")
+
+
+def _fmt_free_cell(
+    free_display_qty: Any,
+    unit: str,
+    free_tl: Any,
+    *,
+    family: str,
+    has_infra: bool,
+) -> str:
+    """Format Free column; tag S3 free capacity as Sellable."""
+    if not has_infra:
+        return "—\n—"
+    block = shared.fmt_qty_tl_block(
+        free_display_qty, unit, free_tl,
+        qty_missing="—",
+    )
+    if family == "storage_s3":
+        try:
+            qty_f = float(free_display_qty) if free_display_qty is not None else 0.0
+        except (TypeError, ValueError):
+            qty_f = 0.0
+        if qty_f > 0:
+            return f"{block}\nSellable"
+    return block
 
 
 def _fmt_dedup_note(row: dict[str, Any], unit: str) -> str:
@@ -600,10 +630,13 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         "pre_dedup_fmt": pre_fmt if has_infra else "—\n—",
         "post_dedup_fmt": post_fmt if has_infra else "—\n—",
         "dedup_savings_fmt": savings_fmt if has_infra else "—",
-        "free_fmt": shared.fmt_qty_tl_block(
-            free_display_qty, unit, free_tl,
-            qty_missing="—",
-        ) if has_infra else "—\n—",
+        "free_fmt": _fmt_free_cell(
+            free_display_qty,
+            unit,
+            free_tl,
+            family=family,
+            has_infra=has_infra,
+        ),
         "unsold_fmt": shared.fmt_qty_tl_block(
             unsold_display_qty, unit, unsold_tl,
             qty_missing="—",
@@ -895,7 +928,12 @@ def _header_money_badges(panels: list[dict[str, Any]], *, profile: str) -> list[
         or str(p.get("family") or "") == "backup_netbackup"
         for p in panels
     )
-    if is_netbackup:
+    is_physical_free = profile in _PHYSICAL_FREE_FAMILIES or any(
+        str(p.get("family") or "") in _PHYSICAL_FREE_FAMILIES
+        or str(p.get("inventory_free_mode") or "") == "physical"
+        for p in panels
+    )
+    if is_netbackup or is_physical_free:
         sellable_tl = _family_potential_tl(panels)
         if sellable_tl <= 0:
             sellable_tl = _sum_tl_field(panels, "free_tl")
@@ -961,6 +999,9 @@ def _family_free_tooltip(*, profile: str, family_key: str) -> str:
         return _OS_LICENCE_TOOLTIP
     if profile == "backup_netbackup" or family_key in ("image_backup", "application_backup"):
         return _NETBACKUP_FREE_TOOLTIP
+    if profile == "storage_s3" or family_key == "storage_s3" or family_key in _PHYSICAL_FREE_FAMILIES:
+        if profile == "storage_s3" or family_key == "storage_s3":
+            return _S3_FREE_COLUMN_TOOLTIP
     return _FREE_COLUMN_TOOLTIP
 
 

@@ -155,7 +155,7 @@ def test_prepare_service_row_standard_free_and_unsold_columns():
     assert row["sellable_alloc_fmt"] == "—\n—"
 
 
-def test_prepare_service_row_s3_physical_free_not_sellable():
+def test_prepare_service_row_s3_physical_free_sellable_tag():
     row = prepare_service_row(_sample_row(
         panel_key="storage_s3_istanbul",
         family="storage_s3",
@@ -168,15 +168,47 @@ def test_prepare_service_row_s3_physical_free_not_sellable():
         unit_price_tl=778.63,
         unit_price_unit="TB",
         has_price=True,
-        sellable_qty=385.0,
-        potential_tl=38500.0,
+        sellable_qty=1200.0,
+        potential_tl=1200.0 * 778.63,
         inventory_free_mode="physical",
     ))
-    # Catalog 778.63 TL/TB × 1,200 TB free
+    # Catalog 778.63 TL/TB × 1,200 TB free — Free remains physical qty
     assert "1,200 TB" in row["free_fmt"]
     assert f"{1200.0 * 778.63:,.0f} TL" in row["free_fmt"]
     assert "385 TB" not in row["free_fmt"]
+    assert "Sellable" in row["free_fmt"]
     assert row["unit_price_fmt"] == "778.63 TL/TB"
+
+
+def test_header_money_badges_s3_uses_free_tl_when_potential_zero():
+    badges = _header_money_badges(
+        [
+            _sample_row(
+                panel_key="storage_s3_ankara",
+                family="storage_s3",
+                sellable_profile="standard",
+                inventory_free_mode="physical",
+                potential_tl=0.0,
+                free_tl=577220.0,
+                sellable_qty=0.0,
+            ),
+            _sample_row(
+                panel_key="storage_s3_istanbul",
+                family="storage_s3",
+                sellable_profile="standard",
+                inventory_free_mode="physical",
+                potential_tl=0.0,
+                free_tl=765753.0,
+                sellable_qty=0.0,
+            ),
+        ],
+        profile="standard",
+    )
+    joined = " ".join(str(getattr(b, "children", b)) for b in badges)
+    assert "CRM Sold" in joined
+    assert "Sellable" in joined
+    # free_tl sum ≈ 1,342,973
+    assert "1,342,973" in joined or "1342973" in joined.replace(",", "")
 
 
 def test_prepare_service_row_netbackup_used_qty_tl_only():
