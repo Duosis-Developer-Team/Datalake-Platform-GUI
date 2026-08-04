@@ -197,6 +197,7 @@ from src.pages.settings.integrations import crm_aliases_callbacks  # noqa: F401 
 from src.pages.settings.integrations import crm_internal_aliases  # noqa: F401 — CRM internal aliases layout
 from src.pages.settings.integrations import crm_internal_aliases_callbacks  # noqa: F401 — CRM internal aliases callbacks
 from src.pages.settings.integrations import netbox_visualization_callbacks  # noqa: F401 — NetBox viz exclusions
+from src.pages.settings.integrations import colocation_config_callbacks  # noqa: F401 — Colocation config
 from src.pages.settings.integrations import hmdl_callbacks  # noqa: F401 — HMDL sync health filters
 from src.pages.settings.integrations import chatbot_logs_callbacks  # noqa: F401 — AI Assistant log viewer
 from src.pages.settings import dashboard_callbacks  # noqa: F401 — Settings overview (cache refresh)

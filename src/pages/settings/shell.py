@@ -31,6 +31,7 @@ from src.pages.settings.integrations import crm_infra_sources as crm_infra_sourc
 from src.pages.settings.integrations import crm_resource_ratios as crm_resource_ratios_page
 from src.pages.settings.integrations import crm_unit_conversions as crm_unit_conversions_page
 from src.pages.settings.integrations import netbox_visualization as netbox_visualization_page
+from src.pages.settings.integrations import colocation_config as colocation_config_page
 from src.pages.settings.integrations import hmdl_overview as hmdl_overview_page
 from src.pages.settings.integrations import hmdl_sync_health as hmdl_sync_health_page
 from src.pages.settings.integrations import hmdl_coverage as hmdl_coverage_page
@@ -76,6 +77,11 @@ HMDL_TABS: list[tuple[str, str, str]] = [
     (f"{_A}/integrations/hmdl/sync-health", "Datalake Sync Health", "page:settings_hmdl_sync_health"),
     (f"{_A}/integrations/hmdl/coverage", "Datalake Coverage", "page:settings_hmdl_coverage"),
     (f"{_A}/integrations/hmdl/config", "Configuration", "page:settings_hmdl_config"),
+]
+
+NETBOX_TABS: list[tuple[str, str, str]] = [
+    (f"{_A}/integrations/netbox/visualization", "Filters", "page:settings_netbox_visualization"),
+    (f"{_A}/integrations/netbox/colocation", "Colocation Configuration", "page:settings_colocation_config"),
 ]
 
 CRM_INT_TABS: list[tuple[str, str, str]] = [
@@ -154,6 +160,10 @@ _PAGE_BUILDERS: dict[str, tuple[str, Callable[..., html.Div]]] = {
         "page:settings_netbox_visualization",
         netbox_visualization_page.build_layout,
     ),
+    f"{_A}/integrations/netbox/colocation": (
+        "page:settings_colocation_config",
+        colocation_config_page.build_layout,
+    ),
     f"{_A}/integrations/chatbot/logs": ("page:settings_chatbot_logs", chatbot_logs_page.build_layout),
     f"{_A}/platform/versions": ("page:settings_platform_versions", platform_versions_page.build_layout),
     f"{_A}/platform/backup-mapping": (
@@ -186,6 +196,7 @@ def has_any_settings_access(user_id: int) -> bool:
         + [c for _, _, c in INT_TABS]
         + [c for _, _, c in CRM_INT_TABS]
         + [c for _, _, c in HMDL_TABS]
+        + [c for _, _, c in NETBOX_TABS]
         + [c for _, _, c in PLATFORM_TABS]
         + ["page:settings_crm_backup"]  # legacy alias for Backup Mapping
     )
@@ -518,6 +529,36 @@ def _sub_nav(user_id: int, current_path: str) -> html.Div | None:
                     )
                 )
 
+        if current_path.startswith(f"{_A}/integrations/netbox"):
+            nbx_links = []
+            for href, label, code in NETBOX_TABS:
+                if not can_view(user_id, code):
+                    continue
+                active = current_path.rstrip("/") == href.rstrip("/")
+                nbx_links.append(
+                    dmc.Anchor(
+                        dmc.Button(
+                            label,
+                            variant="subtle" if not active else "light",
+                            color="indigo",
+                            size="xs",
+                            style={
+                                "borderBottom": "2px solid #552cf8" if active else "2px solid transparent",
+                                "borderRadius": 0,
+                            },
+                        ),
+                        href=href,
+                        underline=False,
+                    )
+                )
+            if nbx_links:
+                blocks.append(
+                    html.Div(
+                        style={"borderBottom": "1px solid #eef1f4", "paddingBottom": "8px", "marginBottom": "16px"},
+                        children=[dmc.Group(gap="xs", children=nbx_links)],
+                    )
+                )
+
         return html.Div(children=blocks)
     if sec == "platform":
         links = []
@@ -561,6 +602,8 @@ def _breadcrumb(current_path: str) -> str:
             return "Administration › Integrations › CRM Dynamics 365"
         if current_path.startswith(f"{_A}/integrations/hmdl"):
             return "Administration › Integrations › HMDL"
+        if current_path.startswith(f"{_A}/integrations/netbox"):
+            return "Administration › Integrations › NetBox / Loki"
         return "Administration › Integrations"
     if sec == "platform":
         if current_path.startswith(f"{_A}/platform/backup-mapping"):

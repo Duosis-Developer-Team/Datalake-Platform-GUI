@@ -357,6 +357,13 @@ def build_default_permission_roots() -> list[PermissionNode]:
                 sort_order=57,
             ),
             _n(
+                "page:settings_colocation_config",
+                "Colocation sellable rack role configuration",
+                "config",
+                route_pattern="/administration/integrations/netbox/colocation",
+                sort_order=58,
+            ),
+            _n(
                 "page:settings_hmdl_overview",
                 "HMDL collector overview",
                 "config",
