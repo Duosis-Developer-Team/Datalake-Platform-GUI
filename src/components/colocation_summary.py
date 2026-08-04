@@ -12,17 +12,33 @@ _EXT_COLOR = "#F79009"  # orange — external customers
 _INT_COLOR = "#528BFF"  # blue — Bulutistan internal
 _UNT_COLOR = "#D0D5DD"  # grey — untagged / unattributable
 
+# Free-U-by-role legend. Deliberately grey rather than red for the excluded
+# roles: those racks are not a fault, they are space that was never ours to
+# sell. Red would read as "broken" on a card an operator sees every day.
+_SELLABLE_COLOR = "#12B76A"  # green — free U we can actually sell
+_EXCLUDED_COLOR = "#98A2B3"  # grey — free U removed from the sellable pool
+
 
 def _tile(label: str, value: str):
-    return dmc.Paper(radius="lg", p="md", withBorder=True, children=[
+    # h/w 100% so a tile fills its grid cell however tall the row grows -- a
+    # value that wraps must not leave its neighbours short.
+    return dmc.Paper(radius="lg", p="md", withBorder=True, h="100%", w="100%", children=[
         dmc.Text(label, size="xs", c="#667085", fw=600),
         dmc.Text(value, size="xl", fw=800, c="#101828"),
     ])
 
 
 def _tile_with_tip(label: str, value: str, tip: str):
+    # boxWrapperProps, not the Paper's own w/h, is what makes a tooltip tile
+    # the same size as its plain neighbours. dmc.Tooltip renders its child
+    # inside a <Box w="fit-content">, and THAT Box is the grid item -- a Paper
+    # at width:100% of a fit-content parent is still fit-content, which is how
+    # "Sellable Free U" rendered 120px wide next to a 318px "Racks" in a grid
+    # whose columns measured 318px each. dmc merges boxWrapperProps over its
+    # own {"w": "fit-content"} default, so this is the only prop that undoes it.
     return dmc.Tooltip(
         label=tip, position="bottom", withArrow=True, multiline=True, w=280,
+        boxWrapperProps={"w": "100%", "h": "100%"},
         children=_tile(label, value),
     )
 
@@ -35,17 +51,71 @@ def _swatch_label(color: str, text: str):
     ])
 
 
+def _sellable_free_u_tip(sellable_free_u: int, free_u: int, role_breakdown) -> str:
+    """Explain the subtraction, with names and numbers.
+
+    A number that quietly shrank is indistinguishable from a bug. Whenever the
+    role breakdown is available the tooltip itemises exactly which roles came
+    out and by how much; without it, it at least quantifies the difference."""
+    excluded_u = max(free_u - sellable_free_u, 0)
+    head = f"{sellable_free_u:,} of {free_u:,} free U can be sold."
+    if not excluded_u:
+        return head + " No rack in this scope is outside the sellable pool."
+    parts = [f"{r['role_name']} {int(r.get('free_u') or 0):,} U "
+             f"({int(r.get('rack_count') or 0)} racks)"
+             for r in (role_breakdown or []) if not r.get("sellable")
+             and int(r.get("free_u") or 0) > 0]
+    detail = (f" {excluded_u:,} U excluded: " + ", ".join(parts) + "."
+              if parts else
+              f" {excluded_u:,} U sits in customer or network cabinets.")
+    return head + detail + (" Space inside a customer's own cabinet belongs to "
+                            "them; a network cabinet is switching space nobody "
+                            "can rent.")
+
+
+def _role_breakdown_line(role_breakdown):
+    """Legend row: free U per rack role, sellable first (allocation.py sorts it
+    that way already). Returns None when there is nothing to justify — a scope
+    whose racks are all sellable has no subtraction to explain, so the line
+    would only add noise."""
+    rows = [r for r in (role_breakdown or []) if int(r.get("free_u") or 0) > 0
+            or int(r.get("rack_count") or 0) > 0]
+    if not rows or all(r.get("sellable") for r in rows):
+        return None
+    return [
+        dmc.Text("Free U by rack role — only sellable roles are priced",
+                 size="xs", c="#667085", fw=600, mt="md"),
+        dmc.Group(gap="lg", mt=6, children=[
+            _swatch_label(
+                _SELLABLE_COLOR if r.get("sellable") else _EXCLUDED_COLOR,
+                f"{r['role_name']} {int(r.get('free_u') or 0):,}U "
+                f"({int(r.get('rack_count') or 0)} racks)",
+            )
+            for r in rows
+        ]),
+    ]
+
+
 def build_colocation_summary(aggregate: dict, customer_count: int | None = None):
     """KPI tiles + stacked used-U bar. Reads total_u/used_u/free_u/rack_count and
     the optional external_u/internal_u/untagged_u/external_customer_count split.
     The bar is hidden when the split is absent/zero.
 
-    A fifth "Free U Potential" tile renders only when the aggregate carries
+    A "Free U Potential" tile renders only when the aggregate carries
     unit_price_tl/free_u_potential_tl keys at all (the DC Colocation tab
     always sets them; the Floor Map's get_dc_racks_occupancy summary never
     does, since that path never resolves a price). When the keys are present
     but the price is unresolved (None), the tile still renders with a — and
-    an "unavailable" tooltip, which is accurate for that caller."""
+    an "unavailable" tooltip, which is accurate for that caller.
+
+    A "Sellable Free U" tile and a per-role free-U legend render only when the
+    aggregate carries sellable_free_u / role_breakdown (customer rule
+    2026-08-04: customer and network cabinets are outside the sellable pool).
+    Same gate-on-key-presence rule as the price tile, and for the same reason:
+    on the Floor Map path no sellability was ever computed, and a tile whose
+    value silently equalled physical free U would assert something untrue.
+    Total U / Used U / Free U stay physical in every case — the exclusion
+    applies to what we offer for sale, not to what exists on the floor."""
     agg = aggregate or {}
     total_u = int(agg.get("total_u") or 0)
     used_u = int(agg.get("used_u") or 0)
@@ -69,34 +139,57 @@ def build_colocation_summary(aggregate: dict, customer_count: int | None = None)
     potential = agg.get("free_u_potential_tl")
     unit_price = agg.get("unit_price_tl")
     price_source = agg.get("price_source") or "unavailable"
-    # free_u_potential_tl prices sellable_free_u (free U OUTSIDE colocation-
-    # allocated racks), not the plain free_u tile above it -- free U inside a
-    # customer's own rack isn't sellable inventory. sellable_free_u falls
-    # back to free_u for callers that never set it (informational-only
-    # aggregates with no allocation data at all), so the tooltip's arithmetic
-    # still holds for them.
+    # free_u_potential_tl prices sellable_free_u (free U outside colocation-
+    # allocated AND network racks), not the plain free_u tile above it -- free
+    # U inside a customer's own cabinet isn't sellable inventory, and a network
+    # cabinet is switching space nobody can rent. sellable_free_u falls back to
+    # free_u for callers that never set it (informational-only aggregates with
+    # no allocation data at all), so the tooltip's arithmetic still holds for
+    # them.
     sellable_free_u = int(agg.get("sellable_free_u", free_u) or 0)
+    # Same "never asked" vs "asked and got zero" distinction as has_price_info:
+    # an aggregate with no sellable_free_u key had no allocation data at all,
+    # so its sellable_free_u fallback is just free_u wearing another name.
+    # Rendering that as a tile would claim every free U is sellable.
+    has_sellable_info = "sellable_free_u" in agg
+    role_breakdown = agg.get("role_breakdown") or []
     if unit_price is None:
         price_tip = "Colocation unit price unavailable. Shown as — rather than 0."
     else:
         origin = {"override": "operator override",
                   "crm": "CRM price list"}.get(price_source, price_source)
         price_tip = (f"{sellable_free_u:,} sellable free U x {unit_price:,.2f} TL per U "
-                     f"({origin}). Excludes free U inside colocation-allocated racks. "
-                     "Potential at list price — not billed revenue.")
+                     f"({origin}). Excludes free U inside colocation-allocated and "
+                     "network racks. Potential at list price — not billed revenue.")
 
     tile_nodes = [
         _tile("Total U", f"{total_u:,}"),
         _tile("Used U", f"{used_u:,}"),
         _tile("Free U", f"{free_u:,}"),
-        _tile("Racks", f"{racks:,}"),
     ]
+    if has_sellable_info:
+        tile_nodes.append(_tile_with_tip(
+            "Sellable Free U", f"{sellable_free_u:,}",
+            _sellable_free_u_tip(sellable_free_u, free_u, role_breakdown),
+        ))
+    tile_nodes.append(_tile("Racks", f"{racks:,}"))
     if has_price_info:
         tile_nodes.append(_tile_with_tip("Free U Potential", fmt_tl(potential), price_tip))
 
-    tiles = dmc.SimpleGrid(cols=len(tile_nodes), spacing="md", children=tile_nodes)
+    # Three across rather than one column per tile. With the sellable tile
+    # added this strip runs to six, and six columns inside the DC shell (the
+    # sidebar takes ~340px of a 1512px viewport) leave ~150px each -- narrow
+    # enough to wrap "4.26 Milyon TL" onto a second line and, once every tile
+    # is pinned to the row height, leave the other five half empty. Capping at
+    # three wraps the strip into two tidy rows with room for the longest
+    # value. Breakpoints are viewport-based, so they cannot see the sidebar;
+    # that is why this stops at three rather than widening on large screens.
+    tiles = dmc.SimpleGrid(cols={"base": 2, "sm": 3}, spacing="md", children=tile_nodes)
 
     children = [tiles]
+    role_line = _role_breakdown_line(role_breakdown)
+    if role_line:
+        children += role_line
     if base > 0:
         segments = []
         for u, color in ((ext, _EXT_COLOR), (intn, _INT_COLOR), (unt, _UNT_COLOR)):

@@ -516,12 +516,36 @@ def build_backup_sellable_block(*, panels: list[dict] | None = None) -> html.Div
     )
 
 
+def _excluded_u_sentence(free_u, sellable_free_u, role_breakdown) -> str:
+    """Name what left the sellable pool, with numbers, or return "".
+
+    Customer rule 2026-08-04: customer cabinets AND network cabinets are out.
+    Naming only one of them (or neither) leaves the tile above looking like a
+    number that shrank for no reason."""
+    excluded_u = max(int(free_u or 0) - int(sellable_free_u or 0), 0)
+    if not excluded_u:
+        return ""
+    parts = [f"{int(r.get('free_u') or 0):,} U in {r['role_name']} cabinets "
+             f"({int(r.get('rack_count') or 0)} racks)"
+             for r in (role_breakdown or []) if not r.get("sellable")
+             and int(r.get("free_u") or 0) > 0]
+    if parts:
+        return f" Excluded from sale — {excluded_u:,} U: " + ", ".join(parts) + "."
+    return (f" Excluded from sale — {excluded_u:,} U in customer and network "
+            "cabinets.")
+
+
 def build_colocation_sellable_entry(coloc_aggregate: dict | None):
     """Physical — Colocation sellable entry: free rack-U and its TL value.
 
     Returns None when there is no colocation data for this DC. The TL figure is
     also folded into the executive Potential Sales range via
     ``platform_total_potential_range(..., colocation_tl=...)``.
+
+    Only SELLABLE free U is shown and priced (customer rule 2026-08-04: not
+    inside a colocation customer's own cabinet, not inside a network cabinet).
+    ``free_u`` stays physical and is cited beside the sellable figure as the
+    base it was cut from, so the subtraction is visible rather than implied.
     """
     agg = coloc_aggregate or {}
     free_u = agg.get("free_u")
@@ -537,6 +561,13 @@ def build_colocation_sellable_entry(coloc_aggregate: dict | None):
     sellable_free_u = agg.get("sellable_free_u", free_u)
     allocated_u = agg.get("colocation_allocated_u")
     rack_count = agg.get("rack_count")
+    excluded_sentence = _excluded_u_sentence(
+        free_u, sellable_free_u, agg.get("role_breakdown")
+    )
+    # Only worth showing the physical base when it differs -- "3,611 U of 3,611
+    # free U" is noise.
+    free_u_sub = (f"of {int(free_u):,} free U" if excluded_sentence
+                  else "all free U is sellable here")
 
     if unit_price is None:
         price_sub = "unit price unavailable"
@@ -545,18 +576,18 @@ def build_colocation_sellable_entry(coloc_aggregate: dict | None):
         note_color = "orange"
         note_icon = "solar:danger-triangle-bold"
     else:
-        price_sub = f"{sellable_free_u:,} U × {unit_price:,.2f} TL"
         note = ("Included in Potential Sales above. Potential at list price — not billed "
-                "revenue. Counts only free U in racks that are not allocated to a "
-                "colocation customer: free space inside a customer's own rack belongs "
-                "to them and cannot be sold to anyone else.")
+                "revenue. Counts only free U that is actually offerable: space inside a "
+                "colocation customer's own cabinet belongs to them, and a network "
+                "cabinet is switching space nobody can rent." + excluded_sentence)
+        price_sub = f"{sellable_free_u:,} U × {unit_price:,.2f} TL"
         note_color = "blue"
         note_icon = "solar:info-circle-bold"
 
     tiles = [
         _exec_kpi(
             "Sellable Free U", f"{sellable_free_u:,} U",
-            "outside customer racks", "solar:box-minimalistic-bold-duotone", "blue",
+            free_u_sub, "solar:box-minimalistic-bold-duotone", "blue",
         ),
         _exec_kpi(
             "Potential (list price)", fmt_tl(potential),
