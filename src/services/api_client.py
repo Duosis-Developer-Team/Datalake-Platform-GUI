@@ -3178,18 +3178,18 @@ def _invalidate_colocation_rule_caches() -> None:
     of its cache keys), but the GUI keeps its own response cache in front of
     it -- without this the screen keeps serving the pre-save number.
     """
+    # Colocation-specific caches
     for prefix in (
         "api:colocation_role_rules",
         "api:colocation",
-        "api:dc_racks_",
-        "api:sellable_summary:",
-        "api:sellable_by_panel:",
-        "api:sellable_by_family:",
+        "api:dc_racks",
     ):
         try:
             _api_response_cache.delete_prefix(prefix)
         except Exception:
             pass
+    # Sellable caches affected by role rule changes
+    _invalidate_sellable_caches()
 
 
 # ---------------------------------------------------------------------------
