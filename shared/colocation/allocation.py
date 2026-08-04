@@ -20,6 +20,8 @@ import json
 import re
 from typing import Any, Sequence
 
+from shared.colocation.role_rules import DEFAULT_RULES, RoleRules
+
 # Rack roles that mean "this rack belongs to a colocation customer", per
 # loki_racks.role_name verified against prod bulutlake on 2026-07-27:
 #   role_id 1 = NETWORK RACK
@@ -47,6 +49,9 @@ COLOCATION_ROLE_IDS = frozenset({"3", "4"})
 # exist.
 NETWORK_ROLE_IDS = frozenset({"1"})
 NON_SELLABLE_ROLE_IDS = COLOCATION_ROLE_IDS | NETWORK_ROLE_IDS
+# NON_SELLABLE_ROLE_IDS artık VARSAYILANI anlatır, tek gerçeği değil: kural
+# seti 2026-08-04'ten beri operatörün ayarladığı bir şey (role_rules.py).
+# Sabit, kural taşımayan eski çağıranlar ve is_sellable_rack() için duruyor.
 
 # loki_racks.role_name, for display only — the breakdown the page shows when
 # someone asks why sellable free U is smaller than total free U.
@@ -114,13 +119,17 @@ def is_sellable_rack(role_id: Any) -> bool:
     without one are the informational aggregates that carry no role data at
     all (the Floor Map occupancy summary). Defaulting those to non-sellable
     would silently zero their free U instead of leaving it unclassified.
+
+    Bu fonksiyon VARSAYILAN kural setini uygular. Operatörün ayarını
+    hesaba katması gereken çağıranlar sellable_rack_totals /
+    aggregate_rack_allocations'a ``rules`` geçmelidir.
     """
-    if role_id is None:
-        return True
-    return str(role_id).strip() not in NON_SELLABLE_ROLE_IDS
+    return DEFAULT_RULES.is_sellable(role_id)
 
 
-def sellable_rack_totals(rows: Sequence[dict]) -> tuple[float, float]:
+def sellable_rack_totals(
+    rows: Sequence[dict], rules: RoleRules = DEFAULT_RULES
+) -> tuple[float, float]:
     """``(capacity_u, used_u)`` summed over sellable racks only.
 
     This is the pair the sellable engine prices for ``dc_hosting_u``. Both
@@ -130,11 +139,14 @@ def sellable_rack_totals(rows: Sequence[dict]) -> tuple[float, float]:
     which produces a *different* answer than simply not offering it. Measured
     2026-08-04: all-racks 8,603/2,712 yields 4,170.4 sellable U, sellable-only
     4,894/1,283 yields 2,632.2 U.
+
+    ``rules`` verilmezse varsayılan kural seti uygulanır, yani bu fonksiyonun
+    eski çağıranları hiç değişmeden aynı sayıyı almaya devam eder.
     """
     capacity = 0
     used = 0
     for row in rows or []:
-        if not is_sellable_rack(row.get("role_id")):
+        if not rules.is_sellable(row.get("role_id")):
             continue
         capacity += int(row.get("capacity_u") or 0)
         used += int(row.get("used_u") or 0)
@@ -267,7 +279,9 @@ def resolve_rack_customer_label(
     return normalize_customer_name(resolved)
 
 
-def aggregate_rack_allocations(rows: Sequence[dict]) -> dict:
+def aggregate_rack_allocations(
+    rows: Sequence[dict], rules: RoleRules = DEFAULT_RULES
+) -> dict:
     """Group occupancy rows (role_id/tags/description/tenant_name-carrying,
     per ``occupancy.occupancy_rows``) into per-colocation-customer allocation
     totals, plus the sellable-free-U base for the rest of the platform.
@@ -329,7 +343,7 @@ def aggregate_rack_allocations(rows: Sequence[dict]) -> dict:
             bucket = {
                 "role_id": role_key,
                 "role_name": ROLE_NAMES.get(role_key, "UNKNOWN"),
-                "sellable": is_sellable_rack(role_id),
+                "sellable": rules.is_sellable(role_id),
                 "rack_count": 0, "capacity_u": 0, "used_u": 0, "free_u": 0,
             }
             by_role[role_key] = bucket
@@ -338,7 +352,7 @@ def aggregate_rack_allocations(rows: Sequence[dict]) -> dict:
         bucket["used_u"] += used
         bucket["free_u"] += free
 
-        if is_sellable_rack(role_id):
+        if rules.is_sellable(role_id):
             sellable_free_u += free
             sellable_capacity_u += capacity
             sellable_used_u += used
