@@ -31,13 +31,18 @@ def test_etag_is_order_independent():
     """Aynı kural seti, satırlar farklı sırada okunduğunda aynı etag vermeli.
 
     Yakaladığı bozulma: sıraya duyarlı etag her istekte yeni cache anahtarı
-    üretir, 6 saatlik colocation cache'i tamamen etkisiz kalır.
+    üretir, 6 saatlik colocation cache'i tamamen etkisiz kalır. Ayrıca,
+    from_rows gerçekten non-default kural setini parse etmeli, varsayılana
+    dönerek değil.
     """
     a = RoleRules.from_rows([{"role_id": "1", "sellable": False},
                              {"role_id": "2", "sellable": True}])
     b = RoleRules.from_rows([{"role_id": "2", "sellable": True},
                              {"role_id": "1", "sellable": False}])
     assert a.etag == b.etag
+    # Pin that from_rows actually parsed the custom rules, not collapsed to defaults
+    assert a == RoleRules({"1": False, "2": True})
+    assert a.etag != DEFAULT_RULES.etag
 
 
 def test_etag_changes_when_a_rule_changes():
