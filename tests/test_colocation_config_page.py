@@ -2,8 +2,12 @@
 
 from unittest.mock import patch
 
+import pytest
+from dash.exceptions import PreventUpdate
+
 from src.pages.settings import shell
 from src.pages.settings.integrations import colocation_config as page
+from src.pages.settings.integrations import colocation_config_callbacks
 from src.utils.colocation_config_ui import (
     merge_rules_with_catalog,
     preview_sellable_free_u,
@@ -115,3 +119,31 @@ def test_netbox_sub_nav_lists_both_tabs():
     text = str(nav)
     assert "Filters" in text
     assert "Colocation Configuration" in text
+
+
+def test_permission_gate_blocks_unauthorized_callback_execution():
+    """Yetkilendirme kontrolü kaldırılırsa yetkisiz kullanıcı API yazabilir.
+
+    Yakaladığı bozulma: preview, guard, confirm_save callback'lerindeki
+    _authorized() kontrolü silinirse yetkisiz kullanıcı kural okuyup yazabilir.
+    Sayfa gated olsa bile, callback doğrudan çağrılabilir ve gated değilse
+    başarılı olur (floor map bug'ı gibi).
+    """
+    store_data = {"merged": RULES}
+    ids = [{"type": "coloc-cfg-switch", "role": "1"}]
+    values = [True]
+    unauthorized_user_store = None
+
+    # preview callback must raise PreventUpdate
+    with pytest.raises(PreventUpdate):
+        colocation_config_callbacks.preview(values, ids, store_data, unauthorized_user_store)
+
+    # guard callback must raise PreventUpdate
+    with pytest.raises(PreventUpdate):
+        colocation_config_callbacks.guard(1, values, ids, store_data, unauthorized_user_store)
+
+    # confirm_save callback must raise PreventUpdate AND not call API
+    with patch.object(page.api, "put_colocation_role_rules") as mock_put:
+        with pytest.raises(PreventUpdate):
+            colocation_config_callbacks.confirm_save(1, values, ids, store_data, unauthorized_user_store)
+        mock_put.assert_not_called()
