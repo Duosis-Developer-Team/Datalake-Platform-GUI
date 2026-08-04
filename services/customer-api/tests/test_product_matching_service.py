@@ -27,6 +27,15 @@ def test_product_matching_service_merges_sold_and_panels():
 
         def _run_query(self, sql, _params=None):
             text = str(sql or "")
+            if "discovery_crm_productpricelevels" in text:
+                return [
+                    {
+                        "productnumber": "000BLT-46",
+                        "amount": 1500.0,
+                        "transactioncurrency_text": "Turkish Lira",
+                        "price_unit": "vCPU",
+                    }
+                ]
             if "discovery_crm_products" in text and "salesorder" not in text.lower():
                 return [
                     {
@@ -71,6 +80,8 @@ def test_product_matching_service_merges_sold_and_panels():
     assert hc["crm_sold_qty"] == 100.0
     assert hc["infra_total"] == 200.0
     assert hc["match_status"] == "capacity"
+    assert hc["unit_price_tl"] == 1500.0
+    assert hc["unit_price_unit"] == "vCPU"
     orphan = by_pn["00999-ORPHAN"]
     assert orphan["match_status"] == "crm_only"
     assert "not yet in matching registry" in orphan["notes"]

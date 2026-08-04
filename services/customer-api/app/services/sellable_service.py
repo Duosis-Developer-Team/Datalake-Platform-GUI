@@ -449,6 +449,7 @@ from shared.sellable.computation import (
     apply_storage_dual_track_ratio_caps,
     apply_storage_ratio_cap,
     apply_utilization_gate,
+    compute_catalog_tl,
     compute_fully_shared_pool_range,
     compute_potential_tl,
     compute_primary_vs_alternate_pool_range,
@@ -848,9 +849,11 @@ class SellableService:
             "_by_resource_type": {k: v[0] for k, v in by_rtype.items()},
         }
 
-    def _bulk_load_price_overrides(self) -> "dict[str, float] | None":
-        """Load best price override per panel_key.  Returns None on failure.
-        Panels with no override still go through get_unit_price_tl (catalog fallback).
+    def _bulk_load_price_overrides(self) -> "dict[str, tuple[float, str]] | None":
+        """Load best price override per panel_key → (unit_price_tl, resource_unit).
+
+        Returns None on failure. Panels with no override still go through
+        get_unit_price_meta (catalog fallback).
         """
         if not self._webui.is_available:
             return None
@@ -858,11 +861,14 @@ class SellableService:
             rows = self._webui.run_rows(sq.BULK_PRICE_OVERRIDES)
             if not isinstance(rows, list):
                 return None
-            return {
-                row["panel_key"]: float(row["unit_price_tl"])
-                for row in rows
-                if row.get("panel_key") and row.get("unit_price_tl") is not None
-            }
+            out: dict[str, tuple[float, str]] = {}
+            for row in rows:
+                pk = row.get("panel_key")
+                if not pk or row.get("unit_price_tl") is None:
+                    continue
+                unit = str(row.get("resource_unit") or "").strip()
+                out[str(pk)] = (float(row["unit_price_tl"]), unit)
+            return out
         except Exception:
             logger.debug("_bulk_load_price_overrides failed; will fall back to per-panel")
             return None
@@ -939,40 +945,50 @@ class SellableService:
             return DEFAULT_THRESHOLD_PCT
 
     def get_unit_price_tl(self, panel_key: str) -> tuple[float, bool]:
-        """Return (unit_price_tl, has_price). Override first, otherwise the
-        catalog TL price for the first mapped product in the panel.
+        """Return (unit_price_tl, has_price). See get_unit_price_meta for UOM."""
+        tl, has_price, _unit = self.get_unit_price_meta(panel_key)
+        return tl, has_price
+
+    def get_unit_price_meta(self, panel_key: str) -> tuple[float, bool, str]:
+        """Return (unit_price_tl, has_price, price_unit).
+
+        Override first (gui_crm_price_override), otherwise the catalog TL price
+        for the first mapped product. ``price_unit`` is the CRM/service UOM
+        (e.g. GB for NetBackup); empty means treat as panel display_unit.
         """
         if not self._webui.is_available:
-            return 0.0, False
+            return 0.0, False, ""
         try:
             row = self._webui.run_one(sq.GET_PRICE_OVERRIDE_FOR_PANEL, (panel_key,))
         except Exception:  # noqa: BLE001
-            logger.exception("get_unit_price_tl override lookup failed (panel=%s)", panel_key)
+            logger.exception("get_unit_price_meta override lookup failed (panel=%s)", panel_key)
             row = None
         if row and row.get("unit_price_tl") is not None:
             try:
-                return float(row["unit_price_tl"]), True
+                unit = str(row.get("resource_unit") or "").strip()
+                return float(row["unit_price_tl"]), True, unit
             except (TypeError, ValueError):
                 pass
         # Catalog fallback — pick any mapped productid for this panel.
         productid = self._first_productid_for_panel(panel_key)
         if not productid:
-            return 0.0, False
+            return 0.0, False, ""
         try:
             with self._svc._get_connection() as conn:
                 with conn.cursor() as cur:
                     catalog = self._svc._run_row(cur, sq.CATALOG_TL_PRICE_FOR_PRODUCT, (productid,))
         except Exception:  # noqa: BLE001
             logger.exception("Catalog price lookup failed for product %s", productid)
-            return 0.0, False
+            return 0.0, False, ""
         if not catalog:
-            return 0.0, False
+            return 0.0, False, ""
         amount = float(catalog[0] or 0.0)
         currency = catalog[1] or "TL"
+        price_unit = str(catalog[2] or "").strip() if len(catalog) > 2 else ""
         tl = self._currency.to_tl(amount, currency)
         if tl is None:
-            return 0.0, False
-        return tl, True
+            return 0.0, False, ""
+        return tl, True, price_unit
 
     def _first_productid_for_panel(self, panel_key: str) -> str | None:
         if not self._webui.is_available:
@@ -2285,7 +2301,7 @@ SELECT _tot, _alloc FROM latest
                 total_disp, alloc_disp, util_pct, sto.threshold_pct,
             )
             sto.sellable_constrained = float(sto.sellable_raw or 0.0)
-            sto.potential_tl = compute_potential_tl(sto.sellable_constrained, sto.unit_price_tl)
+            sto.potential_tl = self._catalog_tl_for_panel(sto, sto.sellable_constrained)
             sto.computation_mode = "aggregated"
             sto.notes = [*(sto.notes or []), note]
             out.append(sto)
@@ -2812,17 +2828,11 @@ SELECT _tot, _alloc FROM latest
                     if has_tracks:
                         self._apply_dual_track_pricing(new, calc_cfg)
                     else:
-                        new.potential_tl = compute_potential_tl(
-                            new.sellable_constrained, new.unit_price_tl,
-                        )
+                        new.potential_tl = self._catalog_tl_for_panel(new, new.sellable_constrained)
                     if new.resource_kind == "storage" and new.sellable_min is not None:
-                        new.potential_tl_min = compute_potential_tl(
-                            new.sellable_min, new.unit_price_tl,
-                        )
+                        new.potential_tl_min = self._catalog_tl_for_panel(new, new.sellable_min)
                         if new.sellable_max is not None:
-                            new.potential_tl_max = compute_potential_tl(
-                                new.sellable_max, new.unit_price_tl,
-                            )
+                            new.potential_tl_max = self._catalog_tl_for_panel(new, new.sellable_max)
                         else:
                             new.potential_tl_max = new.potential_tl_min
                         new.potential_tl = new.potential_tl_min or 0.0
@@ -2863,8 +2873,8 @@ SELECT _tot, _alloc FROM latest
             panel.sellable_max = hi
             panel.sellable_constrained = lo
             panel.sellable_raw = hi
-            panel.potential_tl_min = compute_potential_tl(lo, panel.unit_price_tl)
-            panel.potential_tl_max = compute_potential_tl(hi, panel.unit_price_tl)
+            panel.potential_tl_min = self._catalog_tl_for_panel(panel, lo)
+            panel.potential_tl_max = self._catalog_tl_for_panel(panel, hi)
             panel.potential_tl = panel.potential_tl_min or 0.0
             if note not in (panel.notes or []):
                 panel.notes = [*(panel.notes or []), note]
@@ -2909,8 +2919,8 @@ SELECT _tot, _alloc FROM latest
                 panel.sellable_raw = panel.sellable_max
             if panel.sellable_allocation is None:
                 panel.sellable_allocation = panel.sellable_max
-            panel.potential_tl_min = compute_potential_tl(panel.sellable_min, panel.unit_price_tl)
-            panel.potential_tl_max = compute_potential_tl(panel.sellable_max, panel.unit_price_tl)
+            panel.potential_tl_min = self._catalog_tl_for_panel(panel, panel.sellable_min)
+            panel.potential_tl_max = self._catalog_tl_for_panel(panel, panel.sellable_max)
             panel.potential_tl = panel.potential_tl_min or 0.0
             if note not in (panel.notes or []):
                 panel.notes = [*(panel.notes or []), note]
@@ -3440,18 +3450,17 @@ SELECT _tot, _alloc FROM latest
         panel.sellable_physical = None
         panel.sellable_effective = None
         panel.potential_tl_physical = None
-        price = panel.unit_price_tl
         if panel.resource_kind == "storage" and panel.sellable_min is not None:
             panel.sellable_allocation = panel.sellable_min
-            panel.potential_tl_min = compute_potential_tl(panel.sellable_min, price)
+            panel.potential_tl_min = SellableService._catalog_tl_for_panel(panel, panel.sellable_min)
             hi_qty = panel.sellable_max if panel.sellable_max is not None else panel.sellable_min
-            panel.potential_tl_max = compute_potential_tl(hi_qty, price)
+            panel.potential_tl_max = SellableService._catalog_tl_for_panel(panel, hi_qty)
             panel.potential_tl = panel.potential_tl_min or 0.0
             panel.potential_tl_effective = panel.potential_tl_min
         else:
             qty = panel.sellable_constrained
             panel.sellable_allocation = qty
-            tl = compute_potential_tl(qty, price)
+            tl = SellableService._catalog_tl_for_panel(panel, qty)
             panel.potential_tl = tl
             panel.potential_tl_min = tl
             panel.potential_tl_max = tl
@@ -3468,14 +3477,13 @@ SELECT _tot, _alloc FROM latest
             max_qty = panel.sellable_effective
         if alloc_qty is None and max_qty is None:
             if panel.sellable_physical is None and panel.sellable_effective is None:
-                panel.potential_tl = compute_potential_tl(panel.sellable_constrained, panel.unit_price_tl)
+                panel.potential_tl = self._catalog_tl_for_panel(panel, panel.sellable_constrained)
                 return
             alloc_qty = panel.sellable_physical if panel.resource_kind == "ram" else panel.sellable_effective
             max_qty = panel.sellable_effective if panel.resource_kind == "ram" else None
 
-        price = panel.unit_price_tl
-        alloc_tl = compute_potential_tl(alloc_qty, price) if alloc_qty is not None else 0.0
-        max_tl = compute_potential_tl(max_qty, price) if max_qty is not None else alloc_tl
+        alloc_tl = self._catalog_tl_for_panel(panel, alloc_qty) if alloc_qty is not None else 0.0
+        max_tl = self._catalog_tl_for_panel(panel, max_qty) if max_qty is not None else alloc_tl
         panel.potential_tl_min = alloc_tl
         panel.potential_tl_max = max_tl
         panel.potential_tl_effective = alloc_tl
@@ -3599,8 +3607,8 @@ SELECT _tot, _alloc FROM latest
         sto_p.sellable_raw = sto_p.sellable_max
         sto_p.sellable_constrained = sto_p.sellable_min
         sto_p.has_infra_source = True
-        sto_p.potential_tl_min = compute_potential_tl(sto_p.sellable_min, sto_p.unit_price_tl)
-        sto_p.potential_tl_max = compute_potential_tl(sto_p.sellable_max, sto_p.unit_price_tl)
+        sto_p.potential_tl_min = self._catalog_tl_for_panel(sto_p, sto_p.sellable_min)
+        sto_p.potential_tl_max = self._catalog_tl_for_panel(sto_p, sto_p.sellable_max)
         sto_p.potential_tl = sto_p.potential_tl_min
         sto_p.notes = [*sto_p.notes, note]
 
@@ -3625,16 +3633,22 @@ SELECT _tot, _alloc FROM latest
     def _resolve_unit_price_tl(
         self,
         panel_key: str,
-        price_overrides: "dict[str, float] | None",
-    ) -> tuple[float, bool]:
+        price_overrides: "dict[str, tuple[float, str] | float] | None",
+    ) -> tuple[float, bool, str]:
         """Resolve unit price using the bulk override map; falls back to
-        the per-panel catalog lookup only when no override exists."""
+        the per-panel catalog lookup only when no override exists.
+
+        Returns (unit_price_tl, has_price, price_unit).
+        """
         if price_overrides is not None:
             if panel_key in price_overrides:
-                return float(price_overrides[panel_key]), True
-            # No override → catalog fallback (one extra DB hit per panel without override)
-            return self.get_unit_price_tl(panel_key)
-        return self.get_unit_price_tl(panel_key)
+                raw = price_overrides[panel_key]
+                if isinstance(raw, tuple):
+                    price, unit = raw[0], (raw[1] if len(raw) > 1 else "")
+                    return float(price), True, str(unit or "")
+                return float(raw), True, ""
+            return self.get_unit_price_meta(panel_key)
+        return self.get_unit_price_meta(panel_key)
 
     def compute_panel(
         self,
@@ -3645,7 +3659,7 @@ SELECT _tot, _alloc FROM latest
         selected_clusters: list[str] | None = None,
         infra_lookup: "dict[str, InfraSource] | None" = None,
         threshold_lookup: "dict | None" = None,
-        price_overrides: "dict[str, float] | None" = None,
+        price_overrides: "dict[str, tuple[float, str] | float] | None" = None,
         compute_response_cache: "dict[tuple, dict | None] | None" = None,
         dc_payload: "dict | None" = None,
         filter_pattern_override: str | None = None,
@@ -3675,7 +3689,11 @@ SELECT _tot, _alloc FROM latest
                     src = alias_src
                     notes.append(f"infra aliased from {alias_key}")
         threshold_pct = self._resolve_threshold(panel, dc_code, threshold_lookup)
-        unit_price_tl, has_price = self._resolve_unit_price_tl(panel.panel_key, price_overrides)
+        unit_price_tl, has_price, unit_price_unit = self._resolve_unit_price_tl(
+            panel.panel_key, price_overrides,
+        )
+        if not unit_price_unit:
+            unit_price_unit = str(panel.display_unit or "")
 
         has_infra = bool(
             src.manual_total is not None
@@ -3891,6 +3909,13 @@ SELECT _tot, _alloc FROM latest
         )
 
         # constrained will be filled in by the family-pass below; default = raw.
+        potential = compute_catalog_tl(
+            sellable_raw,
+            unit_price_tl,
+            qty_unit=panel.display_unit,
+            price_unit=unit_price_unit or panel.display_unit,
+            has_price=has_price,
+        ) or 0.0
         return PanelResult(
             panel_key=panel.panel_key,
             label=panel.label,
@@ -3904,12 +3929,24 @@ SELECT _tot, _alloc FROM latest
             sellable_raw=sellable_raw,
             sellable_constrained=sellable_raw,
             unit_price_tl=unit_price_tl,
-            potential_tl=compute_potential_tl(sellable_raw, unit_price_tl),
+            unit_price_unit=unit_price_unit or "",
+            potential_tl=potential,
             ratio_bound=False,
             has_infra_source=has_infra,
             has_price=has_price,
             notes=notes,
         )
+
+    @staticmethod
+    def _catalog_tl_for_panel(panel: PanelResult, qty: float | None) -> float:
+        """Value qty at catalog unit price after aligning display ↔ price UOM."""
+        return compute_catalog_tl(
+            qty,
+            panel.unit_price_tl,
+            qty_unit=panel.display_unit,
+            price_unit=panel.unit_price_unit or panel.display_unit,
+            has_price=bool(panel.has_price),
+        ) or 0.0
 
     # -- result cache (crm-engine Redis DB 2) + Tier-2 durable webui-db ---------
 
@@ -4159,6 +4196,7 @@ SELECT _tot, _alloc FROM latest
             sellable_raw=float(d.get("sellable_raw", 0.0) or 0.0),
             sellable_constrained=float(d.get("sellable_constrained", 0.0) or 0.0),
             unit_price_tl=float(d.get("unit_price_tl", 0.0) or 0.0),
+            unit_price_unit=str(d.get("unit_price_unit") or ""),
             potential_tl=float(d.get("potential_tl", 0.0) or 0.0),
             ratio_bound=bool(d.get("ratio_bound", False)),
             has_infra_source=bool(d.get("has_infra_source", False)),
@@ -4446,7 +4484,7 @@ SELECT _tot, _alloc FROM latest
                 if p.gate_blocked or p.sellable_constrained <= 1e-9:
                     continue
                 family_loss += max(
-                    compute_potential_tl(p.sellable_raw, p.unit_price_tl) - p.potential_tl,
+                    self._catalog_tl_for_panel(p, p.sellable_raw) - p.potential_tl,
                     0.0,
                 )
             agg.total_potential_tl = family_potential

@@ -215,7 +215,7 @@ LIMIT 1;
 # ---------------------------------------------------------------------------
 
 GET_PRICE_OVERRIDE_FOR_PANEL = """
-SELECT po.unit_price_tl, po.currency, po.productid
+SELECT po.unit_price_tl, po.currency, po.productid, po.resource_unit
 FROM   gui_crm_price_override   po
 JOIN   gui_crm_service_pages    sp  ON sp.panel_key = %s
 JOIN   gui_crm_service_mapping_seed     sm  ON sm.page_key = sp.page_key
@@ -227,10 +227,11 @@ LIMIT 1;
 
 # ---------------------------------------------------------------------------
 # Catalog TL price (datalake DB) — fallback when no operator override exists.
+# Prefers Turkish Lira price list; returns catalog UOM for service-unit math.
 # ---------------------------------------------------------------------------
 
 CATALOG_TL_PRICE_FOR_PRODUCT = """
-SELECT ppl.amount, pl.transactioncurrency_text
+SELECT ppl.amount, pl.transactioncurrency_text, ppl.uomid_name
 FROM   discovery_crm_productpricelevels ppl
 JOIN   discovery_crm_pricelevels        pl  ON pl.pricelevelid = ppl.pricelevelid
 WHERE  ppl.productid = %s
@@ -239,6 +240,41 @@ ORDER BY (
          ) DESC,
          ppl.amount DESC
 LIMIT 1;
+"""
+
+# Catalog TL price by productnumber (Product Matching rows).
+CATALOG_TL_PRICE_FOR_PRODUCTNUMBER = """
+SELECT ppl.amount, pl.transactioncurrency_text, ppl.uomid_name, p.productid
+FROM   discovery_crm_products p
+JOIN   discovery_crm_productpricelevels ppl ON ppl.productid = p.productid
+JOIN   discovery_crm_pricelevels        pl  ON pl.pricelevelid = ppl.pricelevelid
+WHERE  p.productnumber = %s
+ORDER BY (
+           pl.transactioncurrency_text IN ('TL', 'Turkish Lira', 'TRY')
+         ) DESC,
+         ppl.amount DESC
+LIMIT 1;
+"""
+
+# Bulk catalog TL prices for Product Matching checklist (TL list preferred).
+CATALOG_TL_PRICES_BY_PRODUCTNUMBER = """
+SELECT DISTINCT ON (p.productnumber)
+    p.productnumber,
+    ppl.amount,
+    pl.transactioncurrency_text,
+    COALESCE(
+        NULLIF(TRIM(ppl.uomid_name), ''),
+        NULLIF(TRIM(p.defaultuomid_name), ''),
+        ''
+    ) AS price_unit
+FROM   discovery_crm_products p
+JOIN   discovery_crm_productpricelevels ppl ON ppl.productid = p.productid
+JOIN   discovery_crm_pricelevels        pl  ON pl.pricelevelid = ppl.pricelevelid
+WHERE  p.productnumber IS NOT NULL
+  AND  TRIM(p.productnumber) <> ''
+ORDER BY p.productnumber,
+         (pl.transactioncurrency_text IN ('TL', 'Turkish Lira', 'TRY')) DESC,
+         ppl.amount DESC;
 """
 
 # ---------------------------------------------------------------------------
@@ -412,7 +448,8 @@ ORDER  BY (dc_code = '*') ASC;
 BULK_PRICE_OVERRIDES = """
 SELECT DISTINCT ON (sp.panel_key)
     sp.panel_key,
-    po.unit_price_tl
+    po.unit_price_tl,
+    po.resource_unit
 FROM   gui_crm_service_pages       sp
 JOIN   gui_crm_service_mapping_seed sm  ON sm.page_key  = sp.page_key
 LEFT   JOIN gui_crm_service_mapping_override ov

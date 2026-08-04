@@ -164,15 +164,19 @@ def test_prepare_service_row_s3_physical_free_not_sellable():
         total=2000.0,
         used_qty=800.0,
         free_qty=1200.0,
-        free_tl=914400.0,
+        free_tl=914400.0,  # stale — overridden by catalog
+        unit_price_tl=778.63,
+        unit_price_unit="TB",
+        has_price=True,
         sellable_qty=385.0,
         potential_tl=38500.0,
         inventory_free_mode="physical",
     ))
-    # crm_sold 30 TB / 45,000 TL -> 1,500 TL/TB implied; free 1,200 TB -> 1,800,000 TL
+    # Catalog 778.63 TL/TB × 1,200 TB free
     assert "1,200 TB" in row["free_fmt"]
-    assert "1,800,000 TL" in row["free_fmt"]
+    assert f"{1200.0 * 778.63:,.0f} TL" in row["free_fmt"]
     assert "385 TB" not in row["free_fmt"]
+    assert row["unit_price_fmt"] == "778.63 TL/TB"
 
 
 def test_prepare_service_row_netbackup_used_qty_tl_only():
@@ -197,6 +201,9 @@ def test_prepare_service_row_netbackup_used_qty_tl_only():
         free_qty=42115.0,
         free_tl=58961.0,
         unsold_qty=44011.0,
+        unit_price_tl=1.43,
+        unit_price_unit="GB",
+        has_price=True,
         inventory_free_mode="physical",
         used_compare_note="Pool used: 411.0 TB · jobs PostDedup: 5.0 TB",
     ))
@@ -212,11 +219,11 @@ def test_prepare_service_row_netbackup_used_qty_tl_only():
     assert "93,380 TL" in row["dedup_savings_fmt"]
     assert "42,115 TB" in row["free_fmt"]
     assert "44,011 TB" in row["unsold_fmt"]
-    # Free valued at the CRM-sold implied price (23,246 TL / 58 TB), not the old
-    # mis-scaled service free_tl (58,961 TL).
-    expected_free_tl = f"{42115.0 * (23246.0 / 58.0):,.0f} TL"
+    # Free valued at catalog 1.43 TL/GB (qty TB → GB × price)
+    expected_free_tl = f"{42115.0 * 1024.0 * 1.43:,.0f} TL"
     assert expected_free_tl in row["free_fmt"]
     assert "58,961 TL" not in row["free_fmt"]
+    assert row["unit_price_fmt"] == "1.43 TL/GB"
     assert "58 TB" not in row["total_fmt"]
 
 
@@ -439,38 +446,43 @@ def test_unit_price_column_present_and_formatted():
 
 
 def test_unit_price_small_value_keeps_precision():
-    """Per-TB / per-GB prices must not round to zero."""
+    """Per-TB / per-GB catalog prices must not round to zero."""
     row = prepare_service_row(_sample_row(
         panel_key="backup_netbackup_storage",
         family="backup_netbackup",
         display_unit="TB",
         sellable_profile="standard",
-        crm_sold_qty=1000.0,
-        crm_sold_tl=1420.0,  # -> 1.42 TL/TB implied
+        unit_price_tl=1.42,
+        unit_price_unit="GB",
+        has_price=True,
         inventory_free_mode="physical",
     ))
-    assert row["unit_price_fmt"] == "1.42 TL/TB"
+    assert row["unit_price_fmt"] == "1.42 TL/GB"
 
 
-def test_physical_free_valued_at_crm_sold_price():
-    """NetBackup Free (and the Birim Fiyat column) use the CRM-sold implied unit price,
-    not the mis-scaled catalog price. Fixes '338 TL for 238 TB' — the ~340x undervaluation."""
+def test_physical_free_valued_at_catalog_price():
+    """NetBackup Free / Birim Fiyat use catalog unit price in service UOM (GB).
+
+    Display qty stays TB; TL = TB×1024 × TL/GB. CRM-sold implied is not used.
+    """
     row = prepare_service_row(_sample_row(
         panel_key="backup_netbackup_storage",
         family="backup_netbackup",
         display_unit="TB",
         sellable_profile="standard",
         crm_sold_qty=79.0,
-        crm_sold_tl=38210.0,      # -> ~484 TL/TB
+        crm_sold_tl=38210.0,
         free_qty=238.0,
-        free_tl=338.0,            # mis-scaled service value, must be overridden
-        unit_price_tl=1.42,       # mis-scaled catalog price, must be ignored
+        free_tl=338.0,            # stale mis-scaled value — must be overridden
+        unit_price_tl=1.43,       # catalog TL/GB
+        unit_price_unit="GB",
+        has_price=True,
         inventory_free_mode="physical",
     ))
-    expected_free_tl = f"{238.0 * (38210.0 / 79.0):,.0f} TL"
+    expected_free_tl = f"{238.0 * 1024.0 * 1.43:,.0f} TL"
     assert expected_free_tl in row["free_fmt"]
     assert "338 TL" not in row["free_fmt"]
-    assert row["unit_price_fmt"] == "484 TL/TB"
+    assert row["unit_price_fmt"] == "1.43 TL/GB"
 
 
 def test_unit_price_missing_shows_dash():

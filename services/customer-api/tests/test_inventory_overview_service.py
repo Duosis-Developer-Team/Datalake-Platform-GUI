@@ -834,7 +834,9 @@ def test_apply_netbackup_inventory_fields_physical_free_and_dedup():
         "panel_key": "backup_netbackup_storage",
         "has_infra_source": True,
         "has_price": True,
-        "unit_price_tl": 230.0,
+        "unit_price_tl": 1.43,       # catalog TL/GB
+        "unit_price_unit": "GB",
+        "display_unit": "TB",
         "used_qty": 5.0,
         "free_qty": 999.0,
         "crm_sold_qty": 10.0,
@@ -855,16 +857,17 @@ def test_apply_netbackup_inventory_fields_physical_free_and_dedup():
     assert out["pre_dedup_qty"] == 50.0
     assert out["post_dedup_qty"] == 5.0
     assert out["used_qty"] == 50.0  # billable = PreDedup
-    assert out["used_tl"] == 11500.0
-    assert out["post_dedup_tl"] == 1150.0
-    assert out["dedup_margin_tl"] == 10350.0
+    # TL = qty_TB × 1024 × 1.43 TL/GB
+    assert out["used_tl"] == pytest.approx(50.0 * 1024.0 * 1.43)
+    assert out["post_dedup_tl"] == pytest.approx(5.0 * 1024.0 * 1.43)
+    assert out["dedup_margin_tl"] == pytest.approx(45.0 * 1024.0 * 1.43)
     assert out["dedup_savings_qty"] == 45.0
     assert out["dedup_savings_pct"] == 90.0
     assert out["dedup_factor"] == 10.0
     assert out["inventory_free_mode"] == "physical"
-    assert out["free_tl"] == 23000.0
+    assert out["free_tl"] == pytest.approx(100.0 * 1024.0 * 1.43)
     assert out["unsold_qty"] == 140.0  # Total 150 − CRM Sold 10
-    assert out["unsold_tl"] == 32200.0
+    assert out["unsold_tl"] == pytest.approx(140.0 * 1024.0 * 1.43)
     assert out["efficiency_pct"] == 500.0
     assert out["pool_used_qty"] == 12.0
     assert "Pool used: 12.0 TB" in out["used_compare_note"]

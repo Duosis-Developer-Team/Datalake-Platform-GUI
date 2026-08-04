@@ -5,9 +5,12 @@ import logging
 from typing import Any
 
 from app.db.queries import crm_sales as sq
+from app.db.queries import sellable as sellable_sq
 from shared.matching import load_product_matching_registry
 
 logger = logging.getLogger(__name__)
+
+_TL_CURRENCIES = frozenset({"TL", "TRY", "TURKISH LIRA", "TRL"})
 
 
 class ProductMatchingService:
@@ -33,6 +36,7 @@ class ProductMatchingService:
         registry = load_product_matching_registry()
         sold_rows = self._load_sold_by_productnumber()
         catalog_rows = self._load_all_products()
+        catalog_prices = self._load_catalog_prices()
         sold_by_pn: dict[str, dict[str, Any]] = {}
         for row in sold_rows:
             pn = str(row.get("productnumber") or "").strip()
@@ -58,7 +62,9 @@ class ProductMatchingService:
         # 1) Registry entries (with or without sales)
         for pn, meta in sorted(registry.items(), key=lambda kv: kv[0]):
             sold = sold_by_pn.pop(pn, None)
-            products.append(self._build_row(meta, sold, panels, infra_by_panel))
+            products.append(
+                self._build_row(meta, sold, panels, infra_by_panel, catalog_prices)
+            )
             seen.add(pn)
 
         # 2) Sold products not yet in registry
@@ -82,6 +88,7 @@ class ProductMatchingService:
                     sold,
                     panels,
                     infra_by_panel,
+                    catalog_prices,
                 )
             )
             seen.add(pn)
@@ -114,6 +121,7 @@ class ProductMatchingService:
                     },
                     panels,
                     infra_by_panel,
+                    catalog_prices,
                 )
             )
             seen.add(pn)
@@ -139,6 +147,36 @@ class ProductMatchingService:
         except Exception:
             logger.exception("ALL_PRODUCTS failed for product matching checklist")
             return []
+
+    def _load_catalog_prices(self) -> dict[str, dict[str, Any]]:
+        """productnumber → {unit_price_tl, unit_price_unit} from TL catalog list only."""
+        try:
+            rows = list(
+                self._db._run_query(sellable_sq.CATALOG_TL_PRICES_BY_PRODUCTNUMBER, ()) or []
+            )
+        except Exception:
+            logger.exception("CATALOG_TL_PRICES_BY_PRODUCTNUMBER failed")
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            pn = str(row.get("productnumber") or "").strip()
+            if not pn:
+                continue
+            ccy = str(row.get("transactioncurrency_text") or "").strip().upper()
+            # Prefer TL list; skip foreign list amounts (no FX conversion).
+            if ccy and ccy not in _TL_CURRENCIES:
+                continue
+            try:
+                amount = float(row.get("amount") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if amount <= 0:
+                continue
+            out[pn] = {
+                "unit_price_tl": amount,
+                "unit_price_unit": str(row.get("price_unit") or "").strip(),
+            }
+        return out
 
     def _panel_lookup(self, *, force_recompute: bool) -> dict[str, dict[str, Any]]:
         if self._inventory is None or not self._inventory.is_available():
@@ -198,6 +236,7 @@ class ProductMatchingService:
         sold: dict[str, Any] | None,
         panel_by_key: dict[str, dict[str, Any]],
         infra_by_panel: dict[str, dict[str, Any]] | None = None,
+        catalog_prices: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         panel_key = meta.get("panel_key")
         panel = panel_by_key.get(panel_key) if panel_key else None
@@ -214,12 +253,33 @@ class ProductMatchingService:
             for c in live.get("infra_columns") or []:
                 if c not in columns:
                     columns.append(c)
+        pn = str(meta.get("productnumber") or "")
+        unit_price_tl: float | None = None
+        unit_price_unit = ""
+        if panel and panel.get("unit_price_tl") not in (None, 0, 0.0):
+            try:
+                unit_price_tl = float(panel.get("unit_price_tl"))
+                unit_price_unit = str(
+                    panel.get("unit_price_unit") or panel.get("display_unit") or ""
+                ).strip()
+            except (TypeError, ValueError):
+                unit_price_tl = None
+        if unit_price_tl is None:
+            cat = (catalog_prices or {}).get(pn) or {}
+            try:
+                raw = cat.get("unit_price_tl")
+                unit_price_tl = float(raw) if raw is not None else None
+            except (TypeError, ValueError):
+                unit_price_tl = None
+            unit_price_unit = str(cat.get("unit_price_unit") or unit).strip()
         row: dict[str, Any] = {
             "productnumber": meta["productnumber"],
             "product_name": meta.get("name") or (sold or {}).get("product_name") or meta["productnumber"],
             "resource_unit": unit,
             "crm_sold_qty": sold_qty,
             "crm_sold_tl": sold_tl,
+            "unit_price_tl": unit_price_tl,
+            "unit_price_unit": unit_price_unit,
             "usage_source": meta.get("usage_source") or "",
             "matching_rule": meta.get("matching_rule") or "",
             "match_status": meta.get("match_status") or "documented",

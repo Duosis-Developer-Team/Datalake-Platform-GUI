@@ -180,6 +180,65 @@ def compute_potential_tl(sellable_constrained: float, unit_price_tl: float) -> f
     return max(sellable_constrained, 0.0) * max(unit_price_tl, 0.0)
 
 
+def _norm_unit(unit: str | None) -> str:
+    return (unit or "").strip().lower()
+
+
+def align_qty_to_price_unit(
+    qty: float,
+    qty_unit: str | None,
+    price_unit: str | None,
+) -> float:
+    """Convert ``qty`` from ``qty_unit`` into ``price_unit`` for catalog math.
+
+    Catalog unit prices are priced in the CRM/service UOM (e.g. NetBackup
+    1.43 TL/GB). Inventory panels may display TB — convert before multiplying
+    so TL = qty_in_service_unit × catalog_unit_price.
+    """
+    value = float(qty or 0.0)
+    q = _norm_unit(qty_unit)
+    p = _norm_unit(price_unit)
+    if not q or not p or q == p:
+        return value
+    if q in ("tb", "tib") and p in ("gb", "gib"):
+        return value * 1024.0
+    if q in ("gb", "gib") and p in ("tb", "tib"):
+        return value / 1024.0
+    if q in ("mb", "mib") and p in ("gb", "gib"):
+        return value / 1024.0
+    if q in ("gb", "gib") and p in ("mb", "mib"):
+        return value * 1024.0
+    if q in ("mb", "mib") and p in ("tb", "tib"):
+        return value / (1024.0 * 1024.0)
+    if q in ("tb", "tib") and p in ("mb", "mib"):
+        return value * 1024.0 * 1024.0
+    return value
+
+
+def compute_catalog_tl(
+    qty: float | None,
+    unit_price_tl: float | None,
+    *,
+    qty_unit: str | None = None,
+    price_unit: str | None = None,
+    has_price: bool = True,
+) -> float | None:
+    """Value ``qty`` at catalog unit price after aligning units.
+
+    Returns None when price is missing/zero or qty is None.
+    """
+    if qty is None or not has_price or unit_price_tl is None:
+        return None
+    try:
+        price = float(unit_price_tl)
+    except (TypeError, ValueError):
+        return None
+    if price <= 0.0:
+        return None
+    aligned = align_qty_to_price_unit(float(qty), qty_unit, price_unit or qty_unit)
+    return compute_potential_tl(aligned, price)
+
+
 def compute_effective_bottleneck_units(
     panels: Iterable[PanelResult],
     ratio: ResourceRatio,

@@ -25,7 +25,7 @@ from app.utils.usage_comparison import (
 )
 from shared.sellable.computation import (
     apply_utilization_gate,
-    compute_potential_tl,
+    compute_catalog_tl,
 )
 from shared.sellable.models import PanelResult, ResourceRatio
 
@@ -277,6 +277,8 @@ def _apply_os_licence_fields(row: dict[str, Any]) -> dict[str, Any]:
         gap,
         unit_price_tl=row.get("unit_price_tl"),
         has_price=bool(row.get("has_price")),
+        qty_unit=str(row.get("display_unit") or ""),
+        price_unit=str(row.get("unit_price_unit") or row.get("display_unit") or ""),
     )
     row["sellable_qty"] = None
     row["sellable_alloc_qty"] = None
@@ -536,17 +538,21 @@ def _value_tl_from_catalog_price(
     *,
     unit_price_tl: float | None,
     has_price: bool,
+    qty_unit: str | None = None,
+    price_unit: str | None = None,
 ) -> float | None:
-    """Monetary value for a physical qty using CRM catalog / override unit price."""
-    if qty is None or not has_price or unit_price_tl is None:
-        return None
-    try:
-        price = float(unit_price_tl)
-    except (TypeError, ValueError):
-        return None
-    if price <= 0.0:
-        return None
-    return compute_potential_tl(float(qty), price)
+    """Monetary value for a physical qty using CRM catalog / override unit price.
+
+    Aligns ``qty`` from ``qty_unit`` (panel display) into ``price_unit``
+    (catalog/service UOM) before multiplying.
+    """
+    return compute_catalog_tl(
+        qty,
+        unit_price_tl,
+        qty_unit=qty_unit,
+        price_unit=price_unit or qty_unit,
+        has_price=has_price,
+    )
 
 
 def _netbackup_job_metrics_for_panel(
@@ -613,6 +619,8 @@ def _apply_netbackup_inventory_fields(
     row = dict(row)
     has_price = bool(row.get("has_price"))
     unit_price = row.get("unit_price_tl")
+    display_unit = str(row.get("display_unit") or "")
+    price_unit = str(row.get("unit_price_unit") or display_unit)
     panel_key = str(row.get("panel_key") or "")
     job_m = _netbackup_job_metrics_for_panel(metrics, panel_key)
     pre = _bytes_to_tb(job_m.get("pre_dedup_bytes", 0.0))
@@ -650,36 +658,22 @@ def _apply_netbackup_inventory_fields(
     row["used_compare_note"] = (
         f"Pool used: {pool_used:,.1f} TB · {cat_label} PostDedup: {post:,.1f} TB"
     )
-    row["free_tl"] = _value_tl_from_catalog_price(
-        row.get("free_qty"),
+    _price_kw = dict(
         unit_price_tl=unit_price,
         has_price=has_price,
+        qty_unit=display_unit,
+        price_unit=price_unit,
     )
-    row["unsold_tl"] = _value_tl_from_catalog_price(
-        row.get("unsold_qty"),
-        unit_price_tl=unit_price,
-        has_price=has_price,
-    )
-    row["post_dedup_tl"] = _value_tl_from_catalog_price(
-        post,
-        unit_price_tl=unit_price,
-        has_price=has_price,
-    )
+    row["free_tl"] = _value_tl_from_catalog_price(row.get("free_qty"), **_price_kw)
+    row["unsold_tl"] = _value_tl_from_catalog_price(row.get("unsold_qty"), **_price_kw)
+    row["post_dedup_tl"] = _value_tl_from_catalog_price(post, **_price_kw)
     margin_qty = max(pre - post, 0.0)
-    row["dedup_margin_tl"] = _value_tl_from_catalog_price(
-        margin_qty,
-        unit_price_tl=unit_price,
-        has_price=has_price,
-    )
+    row["dedup_margin_tl"] = _value_tl_from_catalog_price(margin_qty, **_price_kw)
 
     # Billable inventory used = PreDedup when jobs transfer data is present.
     if pre > 0.0:
         row["used_qty"] = pre
-        row["used_tl"] = _value_tl_from_catalog_price(
-            pre,
-            unit_price_tl=unit_price,
-            has_price=has_price,
-        )
+        row["used_tl"] = _value_tl_from_catalog_price(pre, **_price_kw)
         crm_sold = float(row.get("crm_sold_qty") or 0.0)
         row["delta_used_vs_crm"] = pre - crm_sold
         row["overage_qty"] = max(0.0, pre - crm_sold)
@@ -824,10 +818,16 @@ def _build_merged_infra_panel(
     )
     sellable_constrained = sellable_raw
     unit_price = float(template.unit_price_tl or 0.0)
+    price_unit = str(template.unit_price_unit or template.display_unit or "")
     potential_tl = (
-        compute_potential_tl(sellable_constrained, unit_price)
-        if template.has_price
-        else 0.0
+        compute_catalog_tl(
+            sellable_constrained,
+            unit_price,
+            qty_unit=template.display_unit,
+            price_unit=price_unit,
+            has_price=template.has_price,
+        )
+        or 0.0
     )
     meta = panel_defs.get(target_key) or {}
     label = str(meta.get("label") or template.label or target_key)
@@ -850,6 +850,7 @@ def _build_merged_infra_panel(
         sellable_raw=sellable_raw,
         sellable_constrained=sellable_constrained,
         unit_price_tl=unit_price,
+        unit_price_unit=price_unit,
         potential_tl=potential_tl,
         ratio_bound=False,
         gate_blocked=sellable_raw <= 0.0 and total > 0.0,
@@ -1042,6 +1043,20 @@ def _sellable_track_fields(
             "sellable_tl_max": None,
         }
     unit_price = float(panel.unit_price_tl or 0.0)
+    price_unit = str(panel.unit_price_unit or panel.display_unit or "")
+    display_unit = str(panel.display_unit or "")
+
+    def _tl(qty: float | None) -> float | None:
+        if qty is None or not panel.has_price:
+            return None
+        return compute_catalog_tl(
+            qty,
+            unit_price,
+            qty_unit=display_unit,
+            price_unit=price_unit,
+            has_price=True,
+        )
+
     used = float(panel.allocated or 0.0)
     alloc_qty = panel.sellable_allocation
     max_qty = panel.sellable_max_util
@@ -1069,25 +1084,17 @@ def _sellable_track_fields(
                 avg_qty = constrained_f
     # Replication: triad TL = qty × price (not IBM alternate min/max from Potential Sales).
     if panel.family in _REPLICATION_ALLOCATION_FAMILIES and panel.has_price:
-        potential_tl_alloc = (
-            compute_potential_tl(alloc_qty, unit_price) if alloc_qty is not None else None
-        )
-        potential_tl_max = (
-            compute_potential_tl(max_qty, unit_price) if max_qty is not None else None
-        )
+        potential_tl_alloc = _tl(alloc_qty)
+        potential_tl_max = _tl(max_qty)
     else:
         potential_tl_alloc = panel.potential_tl_min
         if potential_tl_alloc is None and panel.potential_tl is not None:
             potential_tl_alloc = panel.potential_tl
         potential_tl_max = panel.potential_tl_max
-    potential_tl_avg = (
-        compute_potential_tl(avg_qty, unit_price)
-        if avg_qty is not None and panel.has_price
-        else None
-    )
+    potential_tl_avg = _tl(avg_qty) if avg_qty is not None and panel.has_price else None
     used_tl = None
     if not hide_used and panel.has_price:
-        used_tl = compute_potential_tl(used, unit_price)
+        used_tl = _tl(used)
     # Row-level sellable TL bounds for inventory header interval aggregation.
     track_tls = [
         v for v in (potential_tl_alloc, potential_tl_max, potential_tl_avg) if v is not None
@@ -1096,6 +1103,7 @@ def _sellable_track_fields(
     sellable_tl_max = max(track_tls) if track_tls else None
     return {
         "unit_price_tl": unit_price if panel.has_price else None,
+        "unit_price_unit": price_unit if panel.has_price else None,
         "used_tl": used_tl,
         "sellable_profile": _family_sellable_profile(panel.family),
         "sellable_alloc_qty": alloc_qty,
@@ -1554,15 +1562,17 @@ class InventoryOverviewService:
         free_tl_out = None
         unsold_tl_out = None
         if panel.has_infra_source and panel.has_price:
+            price_kw = dict(
+                unit_price_tl=panel.unit_price_tl,
+                has_price=panel.has_price,
+                qty_unit=display_unit,
+                price_unit=str(panel.unit_price_unit or display_unit),
+            )
             if inventory_free_mode == "physical":
-                free_tl_out = _value_tl_from_catalog_price(
-                    free_out,
-                    unit_price_tl=panel.unit_price_tl,
-                    has_price=panel.has_price,
-                )
+                free_tl_out = _value_tl_from_catalog_price(free_out, **price_kw)
             else:
-                free_tl_out = compute_potential_tl(free_out, panel.unit_price_tl)
-            unsold_tl_out = compute_potential_tl(unsold_out, panel.unit_price_tl)
+                free_tl_out = _value_tl_from_catalog_price(free_out, **price_kw)
+            unsold_tl_out = _value_tl_from_catalog_price(unsold_out, **price_kw)
         # Surface IBM-style alternate min/max on replication rows.
         sellable_min = panel.sellable_min if used_is_allocation else None
         sellable_max = panel.sellable_max if used_is_allocation else None

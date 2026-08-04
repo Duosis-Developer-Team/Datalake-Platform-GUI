@@ -16,6 +16,8 @@ def test_prepare_and_filter_product_matching_rows():
             "product_name": "HC CPU",
             "crm_sold_qty": 10,
             "crm_sold_tl": 100,
+            "unit_price_tl": 1500.0,
+            "unit_price_unit": "vCPU",
             "match_status": "capacity",
             "usage_source": "Loki",
             "matching_rule": "cpu total",
@@ -37,6 +39,7 @@ def test_prepare_and_filter_product_matching_rows():
     ]
     prepared = prepare_product_matching_row(rows[0])
     assert "10.0" in prepared["crm_sold_fmt"]
+    assert prepared["unit_price_fmt"] == "1,500 TL/vCPU"
     assert prepared["infra_tables_fmt"] == "nutanix_vm_metrics"
     assert prepared["usage_source"] == "Loki"
     assert prepared["infra_total_fmt"] == "20.0"
@@ -63,6 +66,7 @@ def test_checklist_columns_include_infra_and_usage_source():
     """Product Matching checklist keeps usage_source / infra totals (no hide)."""
     screen_ids = {c["id"] for c in _PRODUCT_MATCHING_COLUMNS}
     assert "usage_source" in screen_ids
+    assert "unit_price_fmt" in screen_ids
     assert "infra_total_fmt" in screen_ids
     assert "infra_used_fmt" in screen_ids
     assert "infra_tables_fmt" in screen_ids

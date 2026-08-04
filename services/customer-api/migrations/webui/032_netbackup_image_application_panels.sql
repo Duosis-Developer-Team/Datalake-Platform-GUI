@@ -70,13 +70,14 @@ ON CONFLICT (page_key) DO UPDATE SET
     panel_key       = EXCLUDED.panel_key;
 
 -- Remap CRM products: 000BLT-203 → image, 000BLT-142 → application.
+-- productid c87bff30 = 000BLT-203 (Image); d2635018 = 000BLT-142 (Application).
 UPDATE gui_crm_service_mapping_seed
 SET    page_key = 'backup_netbackup_image'
-WHERE  productid = 'd2635018-5c6d-f011-b4cc-6045bd93381c';
+WHERE  productid = 'c87bff30-1dd0-f011-8544-7c1e52724e0e';
 
 UPDATE gui_crm_service_mapping_seed
 SET    page_key = 'backup_netbackup_application'
-WHERE  productid = 'c87bff30-1dd0-f011-8544-7c1e52724e0e';
+WHERE  productid = 'd2635018-5c6d-f011-b4cc-6045bd93381c';
 
 -- Infra sources: used semantics from jobs (PreDedup); capacity from disk pools where applicable.
 INSERT INTO gui_panel_infra_source

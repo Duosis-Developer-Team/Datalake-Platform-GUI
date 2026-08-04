@@ -8,6 +8,7 @@ from dash import dash_table, dcc, html
 from dash_iconify import DashIconify
 
 from src.pages import crm_shared as shared
+from shared.sellable.computation import compute_catalog_tl
 
 _ISSUE_STATUSES = frozenset({"over", "unsold_usage"})
 
@@ -126,6 +127,7 @@ _PRODUCT_MATCHING_COLUMNS = [
     {"name": "Product", "id": "product_name"},
     {"name": "Unit", "id": "resource_unit"},
     {"name": "CRM Sold", "id": "crm_sold_fmt"},
+    {"name": "Birim Fiyat", "id": "unit_price_fmt"},
     {"name": "Status", "id": "match_status"},
     {"name": "In registry", "id": "in_registry_fmt"},
     {"name": "Matching Rule", "id": "matching_rule"},
@@ -270,35 +272,38 @@ def _fmt_dedup_note(row: dict[str, Any], unit: str) -> str:
     return f"(Pool used: {pool_used:,.1f} {unit} · {cat} PostDedup: {post:,.1f} {unit})"
 
 
-def _crm_sold_unit_price(row: dict[str, Any]) -> float | None:
-    """Unit price implied by the CRM sale itself: crm_sold_tl / crm_sold_qty.
-
-    In the panel's own display unit, so it can be applied directly to free_qty.
-    Returns None when there's no priced sale to derive from.
-    """
+def _catalog_unit_price(row: dict[str, Any]) -> float | None:
+    """Unit price from catalog / override only (never CRM-sold implied)."""
+    if row.get("has_price") is False:
+        return None
     try:
-        qty = float(row.get("crm_sold_qty") or 0.0)
-        tl = float(row.get("crm_sold_tl") or 0.0)
+        price = float(row.get("unit_price_tl") or 0.0)
     except (TypeError, ValueError):
         return None
-    if qty > 0.0 and tl > 0.0:
-        return tl / qty
-    return None
+    if price <= 0.0:
+        return None
+    return price
 
 
-def _effective_unit_price(row: dict[str, Any], *, is_physical: bool) -> Any:
-    """Price used to value a row's free capacity and to fill the Birim Fiyat column.
+def _price_unit_label(row: dict[str, Any]) -> str:
+    """Service/catalog UOM for Birim Fiyat (falls back to display_unit)."""
+    return str(row.get("unit_price_unit") or row.get("display_unit") or "").strip()
 
-    Physical panels (NetBackup / S3) prefer the CRM-sold implied price so free is
-    valued at what we actually sell it for — the catalog ``unit_price_tl`` for these
-    panels is mis-scaled (e.g. NetBackup free was valued ~340x below the sold price).
-    Falls back to ``unit_price_tl`` (used as-is for virt families).
-    """
-    if is_physical:
-        sold_price = _crm_sold_unit_price(row)
-        if sold_price is not None:
-            return sold_price
-    return row.get("unit_price_tl")
+
+def _value_at_catalog_price(qty: Any, row: dict[str, Any]) -> float | None:
+    """qty (display_unit) × catalog price (price_unit), units aligned."""
+    price = _catalog_unit_price(row)
+    if price is None or qty is None:
+        return None
+    display_unit = str(row.get("display_unit") or "")
+    price_unit = _price_unit_label(row) or display_unit
+    return compute_catalog_tl(
+        float(qty),
+        price,
+        qty_unit=display_unit,
+        price_unit=price_unit,
+        has_price=True,
+    )
 
 
 def _fmt_unit_price(value: Any, unit: str) -> str:
@@ -311,7 +316,10 @@ def _fmt_unit_price(value: Any, unit: str) -> str:
     if price <= 0:
         return "—"
     if price >= 100:
-        num = f"{price:,.0f}"
+        if abs(price - round(price)) < 1e-9:
+            num = f"{price:,.0f}"
+        else:
+            num = f"{price:,.2f}".rstrip("0").rstrip(".")
     elif price >= 1:
         num = f"{price:,.2f}".rstrip("0").rstrip(".")
     else:
@@ -413,16 +421,25 @@ def _fill_replication_storage_tracks(row: dict[str, Any]) -> dict[str, Any]:
     if out.get("sellable_avg_qty") is None:
         out["sellable_avg_qty"] = qty_f
     price = _as_float(out.get("unit_price_tl"))
-    if price is not None and price > 0 and bool(out.get("has_price")):
-        tl = qty_f * price
-        if out.get("potential_tl_alloc") is None:
-            out["potential_tl_alloc"] = tl
-        if out.get("potential_tl_max") is None:
-            out["potential_tl_max"] = tl
-        if out.get("potential_tl_avg") is None:
-            out["potential_tl_avg"] = tl
-        if out.get("potential_tl") is None:
-            out["potential_tl"] = tl
+    if price is not None and price > 0 and out.get("has_price") is not False:
+        display_unit = str(out.get("display_unit") or "")
+        price_unit = str(out.get("unit_price_unit") or display_unit)
+        tl = compute_catalog_tl(
+            qty_f,
+            price,
+            qty_unit=display_unit,
+            price_unit=price_unit,
+            has_price=True,
+        )
+        if tl is not None:
+            if out.get("potential_tl_alloc") is None:
+                out["potential_tl_alloc"] = tl
+            if out.get("potential_tl_max") is None:
+                out["potential_tl_max"] = tl
+            if out.get("potential_tl_avg") is None:
+                out["potential_tl_avg"] = tl
+            if out.get("potential_tl") is None:
+                out["potential_tl"] = tl
     return out
 
 
@@ -486,37 +503,23 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
         crm_f = _as_float(row.get("crm_sold_qty")) or 0.0
         if total_f is not None:
             unsold_display_qty = max(total_f - crm_f, 0.0)
-    # Free = infra empty. Physical panels prefer CRM-sold implied unit price
-    # (catalog free_tl / unit_price_tl can be mis-scaled for NetBackup / S3).
+    # Free = infra empty. Valued at catalog unit price (service UOM aligned).
     free_tl = row.get("free_tl")
     if has_infra and free_display_qty is not None:
-        if use_physical_free:
-            eff_price = _effective_unit_price(row, is_physical=True)
-            if eff_price not in (None, 0):
-                try:
-                    free_tl = float(free_display_qty) * float(eff_price)
-                except (TypeError, ValueError):
-                    pass
-        elif free_tl is None:
-            eff_price = _effective_unit_price(row, is_physical=False)
-            if eff_price not in (None, 0):
-                try:
-                    free_tl = float(free_display_qty) * float(eff_price)
-                except (TypeError, ValueError):
-                    free_tl = None
+        if use_physical_free or free_tl is None:
+            recomputed = _value_at_catalog_price(free_display_qty, row)
+            if recomputed is not None:
+                free_tl = recomputed
     unsold_tl = row.get("unsold_tl")
     if has_infra and unsold_display_qty is not None:
         if unsold_tl is None or use_physical_free:
-            price_for_unsold = _effective_unit_price(row, is_physical=use_physical_free)
-            if price_for_unsold not in (None, 0):
-                try:
-                    unsold_tl = float(unsold_display_qty) * float(price_for_unsold)
-                except (TypeError, ValueError):
-                    if unsold_tl is None:
-                        unsold_tl = None
+            recomputed = _value_at_catalog_price(unsold_display_qty, row)
+            if recomputed is not None:
+                unsold_tl = recomputed
     hide_used = bool(row.get("inventory_hide_used"))
 
-    unit_price_display = _effective_unit_price(row, is_physical=use_physical_free)
+    unit_price_display = _catalog_unit_price(row)
+    price_unit_label = _price_unit_label(row) or unit
 
     # Total = capacity qty only (pool used / PostDedup move to Used for NetBackup).
     total_fmt = _fmt_qty(row.get("total"), unit) if has_infra else "—"
@@ -532,10 +535,23 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
 
     if is_netbackup and has_infra:
         # Transfer = job Pre; Used = pool used (+ PostDedup note).
+        # Prefer backend used_tl (catalog×PreDedup, units aligned); recompute if missing.
+        pre_tl = row.get("used_tl") if pre_qty is not None else None
+        if pre_tl is None and pre_qty is not None:
+            pre_tl = _value_at_catalog_price(pre_qty, row)
+        if post_tl is None and post_qty is not None:
+            post_tl = _value_at_catalog_price(post_qty, row)
+        if dedup_margin_tl is None:
+            try:
+                margin_q = max(float(pre_qty or 0) - float(post_qty or 0), 0.0)
+            except (TypeError, ValueError):
+                margin_q = None
+            if margin_q is not None:
+                dedup_margin_tl = _value_at_catalog_price(margin_q, row)
         pre_fmt = shared.fmt_qty_tl_block(
             pre_qty,
             unit,
-            row.get("used_tl") if pre_qty is not None else None,
+            pre_tl,
             qty_missing="—",
         )
         post_fmt = shared.fmt_qty_tl_block(
@@ -616,7 +632,7 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
             if profile == "os_licence"
             else "—"
         ),
-        "unit_price_fmt": _fmt_unit_price(unit_price_display, unit),
+        "unit_price_fmt": _fmt_unit_price(unit_price_display, price_unit_label),
         "status": status,
         "data_quality": data_quality,
         "sellable_profile": profile,
@@ -1167,6 +1183,10 @@ def prepare_product_matching_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
         **row,
         "crm_sold_fmt": sold_fmt,
+        "unit_price_fmt": _fmt_unit_price(
+            row.get("unit_price_tl"),
+            str(row.get("unit_price_unit") or row.get("resource_unit") or ""),
+        ),
         "infra_tables_fmt": ", ".join(tables) if tables else "—",
         "infra_columns_fmt": ", ".join(columns) if columns else "—",
         "panel_key": row.get("panel_key") or "—",

@@ -118,6 +118,9 @@ class PanelResult:
     sellable_raw: float = 0.0
     sellable_constrained: float = 0.0
     unit_price_tl: float = 0.0
+    # Catalog / override UOM for unit_price_tl (e.g. GB for NetBackup). When
+    # empty, callers treat price as already in display_unit.
+    unit_price_unit: str = ""
     potential_tl: float = 0.0
     ratio_bound: bool = False              # True if constrained < raw
     gate_blocked: bool = False             # True if utilization gate zeroed sellable
