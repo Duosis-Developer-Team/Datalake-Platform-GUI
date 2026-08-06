@@ -1,6 +1,6 @@
 # TASK-94 — Tanım Soruları (Offsite Disk / Backup / Yönetim Hizmetleri)
 
-**Status:** draft
+**Status:** in-progress — 1. ve 2. adım tamamlandı 2026-08-06
 **Created:** 2026-08-06
 **Level:** 1 — Micro
 **Classification gerekçesi:** Çıktı tek bir soru dokümanı; kod, şema, API veya
@@ -73,7 +73,7 @@ Aşağıdakiler dosyadan okunarak doğrulandı (2026-08-06, `main` @ 7962bbb3).
   (`Adet`), `mgmt_os_windows` / `_linux` / `_unix` (`per VM`), `mgmt_backup`
   (`Yedekleme Yönetimi`, per VM), `mgmt_security_soc` / `_siem`,
   `mgmt_active_directory`, `mgmt_support_7x24`.
-- Registry `000BLT-166` (Veeam Yönetim) → `sold_noted_customer_phase`,
+- Registry `000BLT-151` (Veeam Yönetim) → `sold_noted_customer_phase`,
   `infra_tables: [raw_veeam_jobs_states]`. `000BLT-167` (Zerto Yönetim) → aynı
   statü, `usage_source: ""`, `matching_rule: "CRM den gelen data"`.
 - **Windows registry'de hiç yok**: 40 kayıtlık registry'de `Windows` geçmiyor.
@@ -82,9 +82,28 @@ Aşağıdakiler dosyadan okunarak doğrulandı (2026-08-06, `main` @ 7962bbb3).
   `Standart Windows İşletim Sistemi Yönetim Hizmeti` ürünlerinin **aynı
   miktarlarda** geldiğini ve toplanmaması gerektiğini varsayıyor.
 
-**Doğrulanmadı:** hiçbir canlı CRM sorgusu çalıştırılmadı. Yukarıdakilerin tümü
-kural/konfig dosyalarından okundu; gerçek satış adetleri, müşteri sayısı ve UoM
-değerleri bu planın 1. adımında toplanacak.
+## 1. adım sonucu — 2026-08-06
+
+Ölçüm yapıldı (`bulutlake` CRM tabloları, veri 06.08.2026 13:59). Sayılar teslim
+dokümanında yaşıyor, buraya kopyalanmıyor:
+`docs/crm/2026-08-06-tanim-sorulari.md`. Planın **üç varsayımı çürüdü**:
+
+1. **`000BLT-70` / `000BLT-71` aktif hiçbir siparişte yok.** Soru "bunu nasıl
+   ölçeriz"den "bu ürün hâlâ satışta mı"ya döndü. Aynı durum `000BLT-221` ve 16
+   replication kapasite ürününün tamamında geçerli.
+2. **Windows 1:1 varsayımı yanlış.** 268 müşterinin yalnız 74'ünde lisans ve
+   yönetim hizmeti eşit; 42 müşteride lisans olmadan yönetim hizmeti var.
+   `shared/licensing/reconcile.py`'ın dayandığı premise canlı veride tutmuyor.
+3. **Asıl ağırlık beklenen yerde değil.** `000BLT-45` Hyperconverged İmaj
+   Yedekleme 1,67 PB / 315 müşteri ile en büyük backup kalemi ve bugün CRM
+   Inventory'de gizli. Öncelik sırası buna göre değişti (B1 ilk soru).
+
+Ayrıca bir plan hatası düzeltildi: Veeam Yönetim Hizmeti'nin ürün numarası
+`000BLT-166` değil **`000BLT-151`**.
+
+**Veri kapsamı uyarısı:** CRM'den gelen 474 siparişin tamamı `Active`;
+iptal/kapanmış sipariş ve `submitdate` gelmiyor. Bu yüzden "0" = *bugün aktif
+siparişte yok*, "hiç satılmadı" değil. Katalogdaki 275 üründen 99'u aktif.
 
 ## Target Behavior
 
