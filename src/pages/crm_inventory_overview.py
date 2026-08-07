@@ -20,6 +20,7 @@ from src.components.crm_inventory_report import (
     build_report_body,
     filter_by_search,
     filter_service_rows,
+    flat_columns,
     prepare_product_matching_row,
     prepare_service_row,
 )
@@ -201,6 +202,17 @@ def _kpi_filter_shortcut(clicks, ids, current):
     return triggered
 
 
+def _flatten_export_cell(value: Any) -> Any:
+    """Screen cells stack qty/TL on two lines (whiteSpace: pre-line, e.g.
+    "50 TB\\n500 TL"); Excel breaks the cell mid-value and PDF's cell()
+    renders it wrong, so exported cells join the lines with " · " instead
+    (D-11). Deliberate: only the Services sheet's presentation changes, the
+    underlying number is unchanged and still available raw in Services_raw."""
+    if isinstance(value, str):
+        return value.replace("\n", " · ")
+    return value
+
+
 def _build_inventory_export_sheets(
     store: dict[str, Any],
     *,
@@ -213,7 +225,13 @@ def _build_inventory_export_sheets(
     filtered = filter_by_search(filter_service_rows(panels, filter_mode or "all"), search)
     if (filter_mode or "all").lower() == "crm_only":
         filtered = [r for r in filtered if (r.get("infra_binding") or "") == "crm_only"]
-    export_rows = [{**p, **prepare_service_row(p)} for p in filtered]
+    prepared_rows = [prepare_service_row(p) for p in filtered]
+    export_rows = [{**p, **row} for p, row in zip(filtered, prepared_rows)]
+    service_columns = flat_columns()
+    services_records = [
+        {col["name"]: _flatten_export_cell(row.get(col["id"])) for col in service_columns}
+        for row in prepared_rows
+    ]
     summary = dict(store.get("summary") or {})
     summary["export_filter"] = filter_mode or "all"
     summary["export_view_mode"] = view_mode or "grouped"
@@ -238,7 +256,8 @@ def _build_inventory_export_sheets(
     ]
     return {
         "Summary": pd.DataFrame([summary]),
-        "Services": records_to_dataframe(export_rows),
+        "Services": records_to_dataframe(services_records),
+        "Services_raw": records_to_dataframe(export_rows),
         "CRM_only": records_to_dataframe(crm_only_rows),
         "Unmapped": records_to_dataframe(unmapped),
         "Families_summary": records_to_dataframe(families_summary),

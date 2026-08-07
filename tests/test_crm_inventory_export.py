@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
+from src.components.crm_inventory_report import flat_columns
 from src.pages import crm_inventory_overview
 
 
@@ -43,7 +44,9 @@ def test_export_inventory_pdf_returns_pdf_bytes():
     mock_pdf.assert_called_once()
 
 
-def test_build_inventory_export_sheets_respects_filter():
+def test_build_inventory_export_sheets_respects_filter():  # TEST-C-007 (REQ-F-009)
+    """A column-shape refactor of the export sheets must not change which
+    rows the active screen filter includes."""
     store = _fake_store()
     store["panels"].append({
         "panel_key": "backup_veeam",
@@ -57,7 +60,49 @@ def test_build_inventory_export_sheets_respects_filter():
     })
     sheets = crm_inventory_overview._build_inventory_export_sheets(store, filter_mode="infra")
     assert len(sheets["Services"]) == 1
-    assert sheets["Services"].iloc[0]["panel_key"] == "backup_netbackup_storage"
+    assert sheets["Services"].iloc[0]["Service"] == "NetBackup — Storage"
+    assert len(sheets["Services_raw"]) == 1
+    assert sheets["Services_raw"].iloc[0]["panel_key"] == "backup_netbackup_storage"
+
+
+def test_services_sheet_columns_match_flat_columns_headers_and_order():  # TEST-C-003 (AC-005)
+    """The Services sheet must mirror the screen's flat view exactly — same
+    columns, same order, same screen headers — not the raw field ids
+    (crm_sold_fmt) the report used to leak into Excel headers."""
+    sheets = crm_inventory_overview._build_inventory_export_sheets(_fake_store())
+    assert list(sheets["Services"].columns) == [c["name"] for c in flat_columns()]
+
+
+def test_services_sheet_excludes_internal_fields():  # TEST-C-004 (AC-005)
+    """Internal bookkeeping fields must not leak into the customer-facing
+    Services sheet."""
+    sheets = crm_inventory_overview._build_inventory_export_sheets(_fake_store())
+    internal_fields = {
+        "panel_key", "sellable_profile", "has_infra_source",
+        "inventory_free_mode", "data_quality", "used_is_allocation",
+    }
+    assert not (internal_fields & set(sheets["Services"].columns))
+
+
+def test_services_raw_sheet_keeps_raw_fields():  # TEST-C-005 (AC-006)
+    """Raw numbers must stay reachable for analysis once Services becomes a
+    formatted, filtered view — that's what Services_raw is for."""
+    sheets = crm_inventory_overview._build_inventory_export_sheets(_fake_store())
+    raw = sheets["Services_raw"]
+    assert len(raw) == 1
+    assert raw.iloc[0]["panel_key"] == "backup_netbackup_storage"
+    assert raw.iloc[0]["total"] == 100.0
+    assert raw.iloc[0]["crm_sold_qty"] == 50.0
+
+
+def test_services_sheet_cells_have_no_newlines():  # TEST-C-006 (D-11)
+    """A qty/TL block that renders as two lines on screen (whiteSpace:
+    pre-line) must not carry a literal "\\n" into the export — Excel breaks
+    the cell mid-value and PDF's cell() renders it wrong."""
+    sheets = crm_inventory_overview._build_inventory_export_sheets(_fake_store())
+    crm_sold_cell = sheets["Services"].iloc[0]["CRM Sold"]
+    assert "\n" not in crm_sold_cell
+    assert " · " in crm_sold_cell
 
 
 def test_export_inventory_returns_excel_bytes():
