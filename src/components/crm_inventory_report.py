@@ -190,6 +190,63 @@ _OS_LICENCE_TOOLTIP = (
     "(NetBox fallback) ile tespit edilen guest OS adedidir."
 )
 
+# Canonical column spine (ADR-001). Every profile carries these 7 slots in this
+# order; a profile with nothing to say for a slot leaves the cell as "—" rather
+# than dropping the column — dropping is what let column position drift by
+# profile in the first place (TASK-99).
+_SPINE = [
+    {"name": "Service", "id": "service_label"},
+    {"name": "Unit", "id": "display_unit"},
+    {"name": "CRM Sold", "id": "crm_sold_fmt"},
+    {"name": "Total", "id": "total_fmt"},
+    {"name": "Used", "id": "used_fmt"},
+    {"name": "Free", "id": "free_fmt"},
+    {"name": "Unsold", "id": "unsold_fmt"},
+]
+
+# Slot reuse: a profile may relabel one _SPINE slot in place (position stays
+# fixed, only name/id change). Closed list (REQ-F-005) — a new mapping needs a
+# new ADR, not an edit here.
+_SPINE_OVERRIDES = {
+    "replication": {
+        4: {"name": "Allocated", "id": "used_fmt"},
+    },
+    "os_licence": {
+        3: {"name": "Tespit Edilen", "id": "licence_detected_fmt"},
+        6: {"name": "Lisanslanmalı", "id": "licence_gap_fmt"},
+    },
+}
+
+# Group-specific columns, inserted between Unsold (_SPINE[6]) and Birim Fiyat.
+# Never inserted between _SPINE slots (REQ-F-002/003). A profile absent here
+# carries no group block.
+_GROUP_BLOCKS = {
+    "dual_track": [
+        {"name": "Sellable (Alloc)", "id": "sellable_alloc_fmt"},
+        {"name": "Sellable (Max util)", "id": "sellable_max_fmt"},
+        {"name": "Sellable (Ort.)", "id": "sellable_avg_fmt"},
+    ],
+    "replication": [
+        {"name": "Sellable (Alloc)", "id": "sellable_alloc_fmt"},
+        {"name": "Sellable (Max util)", "id": "sellable_max_fmt"},
+        {"name": "Sellable (Ort.)", "id": "sellable_avg_fmt"},
+    ],
+    "allocation_only": [
+        {"name": "Sellable (Alloc)", "id": "sellable_alloc_fmt"},
+    ],
+    "backup_netbackup": [
+        {"name": "Transfer (Pre)", "id": "pre_dedup_fmt"},
+        {"name": "PostDedup (Cost)", "id": "post_dedup_fmt"},
+        {"name": "Dedup Savings %", "id": "dedup_savings_fmt"},
+    ],
+    "comparison_only": [
+        {"name": "Δ Used vs CRM", "id": "delta_fmt"},
+    ],
+    "os_licence": [
+        {"name": "Lisanslanmalı TL", "id": "licence_gap_tl_fmt"},
+    ],
+}
+
 
 def columns_for_family(
     family: str | None,
