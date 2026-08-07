@@ -11,6 +11,7 @@ from src.utils.export_helpers import (
     build_report_info_df,
     csv_bytes_with_report_header,
     dataframes_to_excel_with_meta,
+    dataframes_to_pdf_bytes,
     dataframes_to_pdf_with_meta,
     records_to_dataframe,
 )
@@ -20,12 +21,31 @@ from src.pages.customer_view import _build_customer_export_sheets
 
 
 def test_dataframes_to_pdf_with_meta_multi_sheet():
-    pytest.importorskip("fpdf2")
+    pytest.importorskip("fpdf")
     sheets = {
         "Summary": pd.DataFrame([{"a": 1}]),
         "Services": pd.DataFrame([{"b": 2}]),
     }
     raw = dataframes_to_pdf_with_meta(sheets, None, "CRM Inventory", {"filter": "all"})
+    assert isinstance(raw, bytes)
+    assert len(raw) > 200
+
+
+def test_dataframes_to_pdf_bytes_survives_turkish_and_dash_characters():
+    """fpdf2's core Helvetica font only encodes latin-1. Turkish diacritics
+    (e.g. "Lisanslanmalı") and the em dash this app uses everywhere for
+    missing values ("—") used to raise FPDFUnicodeEncodingException and crash
+    the whole export — found via TASK-99 once a Services sheet header became
+    an on-screen Turkish label for the first time."""
+    pytest.importorskip("fpdf")
+    sheets = {
+        "Services": pd.DataFrame([{
+            "Lisanslanmalı": "6,790 per VM",
+            "Δ Used vs CRM": "—",
+            "Sellable (Ort.)": "20 vCPU · —",
+        }]),
+    }
+    raw = dataframes_to_pdf_bytes(sheets, title="CRM Inventory")
     assert isinstance(raw, bytes)
     assert len(raw) > 200
 

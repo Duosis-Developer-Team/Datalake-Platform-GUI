@@ -191,6 +191,22 @@ def dataframes_to_pdf_with_meta(
     return dataframes_to_pdf_bytes(ordered, title=page_name)
 
 
+_PDF_TRANSLITERATIONS = str.maketrans({
+    "ı": "i", "İ": "I", "ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G",
+    "ç": "c", "Ç": "C", "ö": "o", "Ö": "O", "ü": "u", "Ü": "U",
+    "Δ": "D", "—": "-", "–": "-",
+})
+
+
+def _pdf_safe_text(text: str) -> str:
+    """fpdf2's core Helvetica font only encodes latin-1; transliterate the
+    Turkish characters and symbols report data commonly carries, then drop
+    anything still outside latin-1 rather than letting
+    FPDFUnicodeEncodingException crash the whole export."""
+    text = text.translate(_PDF_TRANSLITERATIONS)
+    return text.encode("latin-1", errors="replace").decode("latin-1")
+
+
 def dataframes_to_pdf_bytes(
     sheets: dict[str, pd.DataFrame],
     *,
@@ -209,7 +225,7 @@ def dataframes_to_pdf_bytes(
 
         def header(self) -> None:
             self.set_font("Helvetica", "B", 12)
-            self.cell(0, 8, self._doc_title[:120], ln=True)
+            self.cell(0, 8, _pdf_safe_text(self._doc_title[:120]), ln=True)
             self.ln(2)
 
     pdf = _PDF(title)
@@ -218,7 +234,7 @@ def dataframes_to_pdf_bytes(
     for sheet_name, df in sheets.items():
         pdf.add_page()
         pdf.set_font("Helvetica", "B", 10)
-        pdf.cell(0, 7, str(sheet_name)[:80], ln=True)
+        pdf.cell(0, 7, _pdf_safe_text(str(sheet_name)[:80]), ln=True)
         pdf.ln(2)
         pdf.set_font("Helvetica", size=7)
         if df is None or df.empty:
@@ -229,12 +245,12 @@ def dataframes_to_pdf_bytes(
         col_width = min(40, max(190, pdf.w - 24) / max(len(cols), 1))
         pdf.set_font("Helvetica", "B", 6)
         for col in cols:
-            pdf.cell(col_width, 5, col[:28], border=1)
+            pdf.cell(col_width, 5, _pdf_safe_text(col[:28]), border=1)
         pdf.ln()
         pdf.set_font("Helvetica", size=6)
         for row in rows[:200]:
             for cell in row:
-                pdf.cell(col_width, 4, str(cell)[:36], border=1)
+                pdf.cell(col_width, 4, _pdf_safe_text(str(cell)[:36]), border=1)
             pdf.ln()
         if len(rows) > 200:
             pdf.ln(1)
