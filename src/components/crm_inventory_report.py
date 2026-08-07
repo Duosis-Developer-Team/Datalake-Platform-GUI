@@ -807,6 +807,17 @@ def build_report_table(
     if family == "os_licence":
         profile = "os_licence"
         row_hide_used = False
+    if row_hide_used:
+        # columns_for_family() no longer drops Used (ADR-001) — it stays in
+        # the column list for every profile, so a call site that wants Used
+        # hidden (virt pools: allocation, not usage) must blank the cell
+        # itself. prepare_service_row() only blanks it when the row's own
+        # inventory_hide_used flag is set, which the call-site's hide_used
+        # argument does not control — without this, a virt row lacking that
+        # per-row flag would render its real used_qty once the column is no
+        # longer dropped (D-6).
+        for d in data:
+            d["used_fmt"] = "—\n—"
     columns = columns_for_family(profile or family, hide_used=row_hide_used)
     if include_family:
         columns = [_FLAT_EXTRA_COLUMN, *columns]

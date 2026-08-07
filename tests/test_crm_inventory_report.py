@@ -434,6 +434,30 @@ def test_columns_for_family_includes_power_hana_virt():
     assert "free_fmt" in col_ids
 
 
+def test_build_report_table_hides_used_cell_for_virt_family():  # TEST-U-005 (REQ-F-004, D-6)
+    """virt_* families force row_hide_used via family membership at the
+    build_report_table call site, not a per-row inventory_hide_used flag.
+    Used must stay in the column list (ADR-001, no more dropping) but the
+    cell must still render "—\\n—" — otherwise a deliberately-hidden
+    allocation number leaks back onto the virtualization pool tables now
+    that the column can no longer be dropped to hide it."""
+    row = _sample_row(
+        panel_key="virt_classic_cpu",
+        family="virt_classic",
+        sellable_profile="standard",
+        used_qty=40.0,
+    )
+    assert not row.get("inventory_hide_used")
+    table = build_report_table(
+        [row],
+        table_id=f"test-virt-hide-{INVENTORY_REPORT_SCHEMA_VERSION}",
+        family="virt_classic",
+    )
+    col_ids = [c["id"] for c in table.columns]
+    assert "used_fmt" in col_ids
+    assert table.data[0]["used_fmt"] == "—\n—"
+
+
 def test_flat_view_keeps_sellable_columns_with_netbackup_row():
     """Flat/list view must not drop Sellable columns just because a NetBackup row
     is present in the mixed table (regression: netbackup row forced whole table to
