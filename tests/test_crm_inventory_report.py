@@ -42,12 +42,15 @@ def _sample_row(**kwargs):
 
 
 def test_columns_for_family_profiles():
-    # Every profile carries Unsold + trailing "Birim Fiyat"; dual_track also
-    # carries Sellable Alloc/Max/Ort.
-    assert len(columns_for_family("standard")) == 8
-    assert len(columns_for_family("dual_track")) == 10
-    assert len(columns_for_family("allocation_only")) == 8
-    assert len(columns_for_family("virt_km", hide_used=True)) == 7
+    # Every profile carries the 7-slot spine + trailing "Birim Fiyat" (ADR-001);
+    # dual_track/allocation_only additionally carry their Sellable group block.
+    # No profile ever drops a spine column, including Used — hide_used no
+    # longer changes the column set (D-6; cell blanking is a row-level concern).
+    assert len(columns_for_family("standard")) == 8  # spine(7) + price
+    assert len(columns_for_family("dual_track")) == 11  # spine(7) + sellable x3 + price
+    assert len(columns_for_family("allocation_only")) == 9  # spine(7) + sellable alloc + price
+    assert len(columns_for_family("virt_km", hide_used=True)) == 8  # spine(7) + price, hide_used ignored
+    assert "used_fmt" in [c["id"] for c in columns_for_family("virt_km", hide_used=True)]
     assert "unsold_fmt" in [c["id"] for c in columns_for_family("standard")]
     assert "unsold_fmt" in [c["id"] for c in columns_for_family("dual_track")]
 
@@ -260,6 +263,9 @@ def test_prepare_service_row_netbackup_used_qty_tl_only():
 
 
 def test_columns_for_family_netbackup_includes_used():
+    # The dedup triad is a group-specific block; it belongs after Unsold, not
+    # tucked between Used and Free — a block wedged inside the spine is
+    # exactly the drift ADR-001 removes (AC-003).
     cols = columns_for_family("backup_netbackup")
     col_ids = [c["id"] for c in cols]
     assert col_ids == [
@@ -268,11 +274,11 @@ def test_columns_for_family_netbackup_includes_used():
         "crm_sold_fmt",
         "total_fmt",
         "used_fmt",
+        "free_fmt",
+        "unsold_fmt",
         "pre_dedup_fmt",
         "post_dedup_fmt",
         "dedup_savings_fmt",
-        "free_fmt",
-        "unsold_fmt",
         "unit_price_fmt",
     ]
 
@@ -419,9 +425,12 @@ def test_prepare_service_row_ignores_zero_km_sub_bucket():
 
 
 def test_columns_for_family_includes_power_hana_virt():
+    # hide_used no longer drops Used from the column set (D-6) — it stays
+    # present and gets blanked per-row in build_report_table instead
+    # (see test_build_report_table_hides_used_cell_for_virt_family).
     cols = columns_for_family("virt_power_hana", hide_used=True)
     col_ids = [c["id"] for c in cols]
-    assert "used_fmt" not in col_ids
+    assert "used_fmt" in col_ids
     assert "free_fmt" in col_ids
 
 

@@ -12,38 +12,6 @@ from shared.sellable.computation import compute_catalog_tl
 
 _ISSUE_STATUSES = frozenset({"over", "unsold_usage"})
 
-_BASE_COLUMNS = [
-    {"name": "Service", "id": "service_label"},
-    {"name": "Unit", "id": "display_unit"},
-    {"name": "CRM Sold", "id": "crm_sold_fmt"},
-    {"name": "Total", "id": "total_fmt"},
-    {"name": "Used", "id": "used_fmt"},
-    {"name": "Free", "id": "free_fmt"},
-    {"name": "Unsold", "id": "unsold_fmt"},
-]
-
-_REPLICATION_COLUMNS = [
-    {"name": "Service", "id": "service_label"},
-    {"name": "Unit", "id": "display_unit"},
-    {"name": "CRM Sold", "id": "crm_sold_fmt"},
-    {"name": "Total", "id": "total_fmt"},
-    {"name": "Allocated", "id": "used_fmt"},
-    {"name": "Free", "id": "free_fmt"},
-    {"name": "Unsold", "id": "unsold_fmt"},
-    {"name": "Sellable (Alloc)", "id": "sellable_alloc_fmt"},
-    {"name": "Sellable (Max util)", "id": "sellable_max_fmt"},
-    {"name": "Sellable (Ort.)", "id": "sellable_avg_fmt"},
-]
-
-_VIRT_BASE_COLUMNS = [
-    {"name": "Service", "id": "service_label"},
-    {"name": "Unit", "id": "display_unit"},
-    {"name": "CRM Sold", "id": "crm_sold_fmt"},
-    {"name": "Total", "id": "total_fmt"},
-    {"name": "Free", "id": "free_fmt"},
-    {"name": "Unsold", "id": "unsold_fmt"},
-]
-
 _INVENTORY_VIRT_FAMILIES = frozenset({
     "virt_classic",
     "virt_hyperconverged",
@@ -52,20 +20,6 @@ _INVENTORY_VIRT_FAMILIES = frozenset({
 })
 
 _PHYSICAL_FREE_FAMILIES = frozenset({"storage_s3", "backup_netbackup"})
-
-_NETBACKUP_COLUMNS = [
-    {"name": "Service", "id": "service_label"},
-    {"name": "Unit", "id": "display_unit"},
-    {"name": "CRM Sold", "id": "crm_sold_fmt"},
-    {"name": "Total", "id": "total_fmt"},
-    {"name": "Used", "id": "used_fmt"},
-    {"name": "Transfer (Pre)", "id": "pre_dedup_fmt"},
-    {"name": "PostDedup (Cost)", "id": "post_dedup_fmt"},
-    {"name": "Dedup Savings %", "id": "dedup_savings_fmt"},
-    {"name": "Free", "id": "free_fmt"},
-    {"name": "Unsold", "id": "unsold_fmt"},
-    {"name": "Birim Fiyat", "id": "unit_price_fmt"},
-]
 
 _FREE_COLUMN_TOOLTIP = (
     "Free = altyapıdaki boş kapasite (Total − Allocated / pool available). "
@@ -81,16 +35,6 @@ _NETBACKUP_FREE_TOOLTIP = (
     "Free = boş havuz kapasitesi (available space). CRM Sold düşülmez. "
     "Unsold = Total − CRM Sold."
 )
-
-_DUAL_TRACK_COLUMNS = [
-    {"name": "Sellable (Alloc)", "id": "sellable_alloc_fmt"},
-    {"name": "Sellable (Max util)", "id": "sellable_max_fmt"},
-    {"name": "Sellable (Ort.)", "id": "sellable_avg_fmt"},
-]
-
-_ALLOC_ONLY_COLUMNS = [
-    {"name": "Sellable (Alloc)", "id": "sellable_alloc_fmt"},
-]
 
 _UNIT_PRICE_COLUMN = {"name": "Birim Fiyat", "id": "unit_price_fmt"}
 
@@ -166,25 +110,6 @@ _TABLE_STYLE_HEADER = {
 }
 
 
-_COMPARISON_ONLY_COLUMNS = [
-    {"name": "Service", "id": "service_label"},
-    {"name": "Unit", "id": "display_unit"},
-    {"name": "CRM Sold", "id": "crm_sold_fmt"},
-    {"name": "Total", "id": "total_fmt"},
-    {"name": "Used", "id": "used_fmt"},
-    {"name": "Δ Used vs CRM", "id": "delta_fmt"},
-]
-
-_OS_LICENCE_COLUMNS = [
-    {"name": "Service", "id": "service_label"},
-    {"name": "Unit", "id": "display_unit"},
-    {"name": "Tespit Edilen", "id": "licence_detected_fmt"},
-    {"name": "CRM Sold", "id": "crm_sold_fmt"},
-    {"name": "Lisanslanmalı", "id": "licence_gap_fmt"},
-    {"name": "Birim Fiyat", "id": "unit_price_fmt"},
-    {"name": "Lisanslanmalı TL", "id": "licence_gap_tl_fmt"},
-]
-
 _OS_LICENCE_TOOLTIP = (
     "Lisans satılabilir kapasite değildir; sayı vm_metrics.guest_os "
     "(NetBox fallback) ile tespit edilen guest OS adedidir."
@@ -248,38 +173,39 @@ _GROUP_BLOCKS = {
 }
 
 
+_REPLICATION_PROFILE_PREFIXES = ("backup_veeam_replication", "backup_zerto_replication")
+
+
+def _spine_profile_key(profile: str) -> str:
+    """Canonicalize a raw sellable_profile / family value for _SPINE_OVERRIDES
+    and _GROUP_BLOCKS lookup. Only replication has family-name aliases
+    (veeam/zerto); every other value is looked up as-is."""
+    if profile == "replication" or profile.startswith(_REPLICATION_PROFILE_PREFIXES):
+        return "replication"
+    return profile
+
+
 def columns_for_family(
     family: str | None,
     *,
     hide_used: bool = False,
 ) -> list[dict[str, str]]:
-    """Return DataTable columns for a family sellable profile."""
-    profile = (family or "standard").strip()
-    if profile == "os_licence":
-        return list(_OS_LICENCE_COLUMNS)
-    if profile == "comparison_only":
-        return [*list(_COMPARISON_ONLY_COLUMNS), dict(_UNIT_PRICE_COLUMN)]
-    if profile == "backup_netbackup":
-        return list(_NETBACKUP_COLUMNS)
-    if (
-        profile == "replication"
-        or profile.startswith("backup_veeam_replication")
-        or profile.startswith("backup_zerto_replication")
-    ):
-        return [*list(_REPLICATION_COLUMNS), dict(_UNIT_PRICE_COLUMN)]
-    if profile in _PHYSICAL_FREE_FAMILIES:
-        profile = "standard"
-        hide_used = False
-    use_virt_base = hide_used or profile in ("dual_track", "allocation_only")
-    if profile in _INVENTORY_VIRT_FAMILIES:
-        use_virt_base = True
-    base_cols = _VIRT_BASE_COLUMNS if use_virt_base else _BASE_COLUMNS
-    if profile == _FLAT_VIEW_FAMILY or profile == "dual_track":
-        cols = [*list(base_cols), *list(_DUAL_TRACK_COLUMNS)]
-    elif profile == "allocation_only":
-        cols = [*list(base_cols), *list(_ALLOC_ONLY_COLUMNS)]
-    else:
-        cols = list(base_cols)
+    """Return DataTable columns for a family sellable profile.
+
+    Every profile carries the same canonical spine, in the same order
+    (ADR-001): a slot a profile has nothing to say for stays in place and
+    renders "—" rather than being dropped — dropping is what let common
+    columns land at a different index per profile.
+
+    `hide_used` is kept for signature compatibility only; it no longer
+    changes the column set. Blanking the Used cell for hidden-allocation
+    families is a row-level concern handled in build_report_table.
+    """
+    profile = _spine_profile_key((family or "standard").strip())
+    cols = list(_SPINE)
+    for idx, override in _SPINE_OVERRIDES.get(profile, {}).items():
+        cols[idx] = dict(override)
+    cols = [*cols, *(dict(c) for c in _GROUP_BLOCKS.get(profile, []))]
     return [*cols, dict(_UNIT_PRICE_COLUMN)]
 
 

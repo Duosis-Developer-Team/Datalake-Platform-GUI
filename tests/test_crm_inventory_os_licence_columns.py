@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from src.components.crm_inventory_report import (
-    _OS_LICENCE_COLUMNS,
     _OS_LICENCE_TOOLTIP,
     _family_free_tooltip,
     _family_sellable_profile,
@@ -12,21 +11,27 @@ from src.components.crm_inventory_report import (
 )
 
 
-def test_columns_for_os_licence_profile():
+def test_columns_for_os_licence_profile():  # TEST-U-006 (REQ-F-005)
+    # os_licence reuses spine slot 3 (Total) for Tespit Edilen and slot 6
+    # (Unsold) for Lisanslanmalı; Used/Free have no override and stay as dead
+    # "—" columns (ADR-001) rather than being dropped — dropping them is what
+    # bumped Birim Fiyat off the end (REQ-F-003) and shifted every column
+    # after it.
     cols = columns_for_family("os_licence")
     ids = [c["id"] for c in cols]
-    assert ids == [c["id"] for c in _OS_LICENCE_COLUMNS]
     assert "sellable_alloc_fmt" not in ids
-    assert "free_fmt" not in ids
     assert ids == [
         "service_label",
         "display_unit",
-        "licence_detected_fmt",
         "crm_sold_fmt",
+        "licence_detected_fmt",
+        "used_fmt",
+        "free_fmt",
         "licence_gap_fmt",
-        "unit_price_fmt",
         "licence_gap_tl_fmt",
+        "unit_price_fmt",
     ]
+    assert ids[-1] == "unit_price_fmt"  # Birim Fiyat is last for every profile (REQ-F-003)
 
 
 def test_family_sellable_profile_os_licence():
