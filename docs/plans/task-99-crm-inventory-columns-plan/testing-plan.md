@@ -21,6 +21,21 @@ tests/test_crm_inventory_os_licence_columns.py   5
 tests/test_crm_inventory_export.py               3
 ```
 
+**Yeni testler hangi dosyaya gider:**
+
+| Test grubu | Hedef dosya | Durum |
+|---|---|---|
+| `TEST-U-001` – `TEST-U-006` (omurga) | `tests/test_crm_inventory_columns_spine.py` | **yeni dosya** |
+| `TEST-U-007`, `TEST-U-008` (`delta_fmt`) | `tests/test_crm_inventory_report.py` | mevcut dosyaya eklenir |
+| `TEST-C-001`, `TEST-C-002` (flat) | `tests/test_crm_inventory_columns_spine.py` | **yeni dosya** |
+| `TEST-C-003` – `TEST-C-007` (export) | `tests/test_crm_inventory_export.py` | mevcut dosyaya eklenir |
+| `TEST-R-002` (şema sürümü) | `tests/test_crm_inventory_report.py` | mevcut dosyaya eklenir |
+
+Yeni dosya adı `..._spine.py` seçildi çünkü mevcut
+`test_crm_inventory_os_licence_columns.py` ve `..._replication_columns.py`
+**profil bazlı**; omurga testi profil üstü bir sözleşmeyi doğruluyor ve ikisinden
+birinin içine gömülürse yanlış yerde aranır.
+
 ---
 
 ## Yazma kuralı
@@ -87,6 +102,24 @@ görsel özellik.
 | `TEST-A-002` | Flat görünüme geçilir; 19 kolon görünür ve yatay scroll çalışır | Kolon taşması tabloyu kullanılamaz hale getirir |
 | `TEST-A-003` | Excel indirilir, `Services` sayfası ekrandaki tabloyla karşılaştırılır | Kolon eşleşmesi testte geçer ama gerçek dosyada bozuk çıkar |
 | `TEST-A-004` | PDF indirilir, 19 kolonun okunabilirliği kontrol edilir (`REQ-NF-005`) | Landscape A4'te 19 kolon ≈14,4 mm/kolon; hücre metni sığmazsa okunamaz |
+
+**Uygulamayı ayağa kaldırma:** `FACT` — giriş noktası `app.py:3128`,
+`app.run(debug=True, port=8050)`.
+
+```bash
+.venv/bin/python app.py     # → http://localhost:8050/crm/inventory-overview
+```
+
+**`RISK-004` — local'de veri gelmeyebilir.** Sayfa `api.get_crm_inventory_overview("*")`
+ile backend'e gidiyor (`crm_inventory_overview.py:129`). Backend servisleri local'de
+ayakta değilse sayfa "Inventory unavailable" veya "Inventory warming" gösterir ve
+`TEST-A-001`–`TEST-A-004` koşulamaz.
+*Azaltma, tercih sırasıyla:*
+1. `build_layout_content(payload)` (`crm_inventory_overview.py:142`) hazır bir payload
+   ile çağrılabiliyor — testlerdeki `_fake_store()` kalıbı genişletilerek dokuz profili
+   birden içeren bir fixture ile render alınır.
+2. Olmazsa doğrulama dc13'te yapılır (docker compose, `/opt/Datalake-Platform-GUI`).
+3. Hiçbiri olmazsa `TEST-A-*` **yapılmadı** diye raporlanır — "geçti" denmez.
 
 **PDF için not:** `FACT` — bugünkü export ham + formatlanmış alanları birleştirdiği
 için 60+ kolon üretiyor, yani PDF **zaten okunamaz** durumda. 19 kolona inmek bunu

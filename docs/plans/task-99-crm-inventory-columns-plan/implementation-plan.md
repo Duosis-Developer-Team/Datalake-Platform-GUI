@@ -276,12 +276,21 @@ bu sayfada yok. Mevcut `tests/test_crm_inventory_export.py` (3 test) güncelleni
 
 ### Adım 8 — Test paketi ve tarayıcı doğrulaması
 
-Kırılan testler yeni sözleşmeye göre güncellenir, silinmez (`AC-009`). Ardından
-uygulama çalıştırılıp dokuz grubun accordion'u açılır; ortak kolonların aynı
-indekste olduğu ve PDF'in 19 kolonla okunabilir olduğu görsel olarak doğrulanır
-(`REQ-NF-005`).
+Kırılan testler yeni sözleşmeye göre güncellenir, silinmez (`AC-009`).
 
-*Doğrulama:* `testing-plan.md` §4 ve §5.
+```bash
+.venv/bin/python -m pytest tests/ -q      # tüm paket
+.venv/bin/python app.py                   # → localhost:8050/crm/inventory-overview
+```
+
+Ardından dokuz grubun accordion'u açılır; ortak kolonların aynı indekste olduğu ve
+PDF'in 19 kolonla okunabilir olduğu görsel olarak doğrulanır (`REQ-NF-005`).
+Local'de backend ayakta değilse tarayıcı doğrulaması koşulamaz — `testing-plan.md`
+§5 `RISK-004` üç kademeli çıkış yolunu tanımlıyor; hiçbiri işlemezse `TEST-A-*`
+**"yapılmadı"** diye raporlanır, "geçti" denmez.
+
+*Doğrulama:* `testing-plan.md` §4 ve §5. Yeni testlerin hangi dosyaya gideceği
+`testing-plan.md` başındaki tabloda.
 
 ---
 
