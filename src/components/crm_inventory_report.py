@@ -209,6 +209,29 @@ def columns_for_family(
     return [*cols, dict(_UNIT_PRICE_COLUMN)]
 
 
+def flat_columns() -> list[dict[str, str]]:
+    """Flat view's 19 columns (REQ-F-006): every group's columns unioned,
+    fixed order, built from the same _SPINE / _SPINE_OVERRIDES / _GROUP_BLOCKS
+    single source as columns_for_family() so the two can't drift apart.
+
+    Slot reuse does NOT apply here — a mixed flat table carries rows from
+    every profile at once, so one slot can't mean "Total" on one row and
+    "Tespit Edilen" on another. os_licence's two overrides get their own
+    columns instead of replacing Total / Unsold.
+    """
+    return [
+        _FLAT_EXTRA_COLUMN,
+        *(dict(c) for c in _SPINE),
+        *(dict(c) for c in _GROUP_BLOCKS["dual_track"]),
+        *(dict(c) for c in _GROUP_BLOCKS["backup_netbackup"]),
+        dict(_SPINE_OVERRIDES["os_licence"][3]),
+        dict(_SPINE_OVERRIDES["os_licence"][6]),
+        *(dict(c) for c in _GROUP_BLOCKS["os_licence"]),
+        *(dict(c) for c in _GROUP_BLOCKS["comparison_only"]),
+        dict(_UNIT_PRICE_COLUMN),
+    ]
+
+
 def _fmt_qty(value: Any, unit: str) -> str:
     if value is None:
         return "—"
@@ -776,6 +799,7 @@ def build_report_table(
     family: str | None = None,
     sellable_profile: str | None = None,
     hide_used: bool = False,
+    columns_override: list[dict[str, str]] | None = None,
 ) -> dash_table.DataTable:
     data = [prepare_service_row(r) for r in rows]
     profile = sellable_profile
@@ -818,9 +842,12 @@ def build_report_table(
         # longer dropped (D-6).
         for d in data:
             d["used_fmt"] = "—\n—"
-    columns = columns_for_family(profile or family, hide_used=row_hide_used)
-    if include_family:
-        columns = [_FLAT_EXTRA_COLUMN, *columns]
+    if columns_override is not None:
+        columns = list(columns_override)
+    else:
+        columns = columns_for_family(profile or family, hide_used=row_hide_used)
+        if include_family:
+            columns = [_FLAT_EXTRA_COLUMN, *columns]
     width_styles = _table_column_width_styles(columns)
     return dash_table.DataTable(
         id=table_id,
@@ -1133,8 +1160,7 @@ def build_flat_view(
         filtered,
         table_id="crm-inventory-flat-table",
         page_size=25,
-        include_family=True,
-        sellable_profile=_FLAT_VIEW_FAMILY,
+        columns_override=flat_columns(),
     )
 
 

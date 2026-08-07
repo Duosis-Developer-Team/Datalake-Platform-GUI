@@ -6,6 +6,7 @@ from src.components.crm_inventory_report import (
     _SPINE,
     _SPINE_OVERRIDES,
     columns_for_family,
+    flat_columns,
     prepare_service_row,
 )
 
@@ -102,3 +103,47 @@ def test_group_blocks_sit_between_unsold_and_unit_price():  # TEST-U-003 (AC-003
         middle = cols[len(_SPINE):-1]
         for col in middle:
             assert col["id"] not in spine_ids
+
+
+def test_flat_columns_returns_19_in_fixed_order():  # TEST-C-001 (AC-004)
+    """Flat view must show every column from every group, in the exact fixed
+    order from REQ-F-006 — this is the "flat table is missing fields"
+    complaint TASK-99 was filed for."""
+    ids = [c["id"] for c in flat_columns()]
+    assert ids == [
+        "family_label",
+        "service_label",
+        "display_unit",
+        "crm_sold_fmt",
+        "total_fmt",
+        "used_fmt",
+        "free_fmt",
+        "unsold_fmt",
+        "sellable_alloc_fmt",
+        "sellable_max_fmt",
+        "sellable_avg_fmt",
+        "pre_dedup_fmt",
+        "post_dedup_fmt",
+        "dedup_savings_fmt",
+        "licence_detected_fmt",
+        "licence_gap_fmt",
+        "licence_gap_tl_fmt",
+        "delta_fmt",
+        "unit_price_fmt",
+    ]
+    assert len(ids) == 19
+
+
+def test_flat_columns_does_not_apply_slot_reuse():  # TEST-C-002 (REQ-F-006)
+    """Slot reuse is a grouped-view concept — one table, one profile. A flat
+    row mixes every profile at once, so Total / Unsold must stay their own
+    columns alongside Tespit Edilen / Lisanslanmalı instead of being
+    overridden by them; one slot can't carry two different meanings across
+    mixed rows."""
+    ids = [c["id"] for c in flat_columns()]
+    assert "total_fmt" in ids
+    assert "unsold_fmt" in ids
+    assert "licence_detected_fmt" in ids
+    assert "licence_gap_fmt" in ids
+    assert ids.count("total_fmt") == 1
+    assert ids.count("licence_detected_fmt") == 1
