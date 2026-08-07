@@ -1,7 +1,9 @@
 # Status
 
-**Current status:** `draft`
+**Current status:** `approved`
 **Last updated:** 2026-08-07
+**Onay:** Arca, 2026-08-07 — plan raporu okunduktan sonra sözlü onay; uygulama
+`ccode`'a devrediliyor.
 **Hermes:** `TASK-99` — `in_progress`, due 2026-08-07, priority `urgent`
 
 ## Completed
@@ -27,13 +29,9 @@
 
 ## Next action
 
-Plan `draft`. İki şey bekliyor:
-
-1. **Kullanıcı incelemesi** — özellikle `ADR-001`'deki "ilgisiz kolon silinmez,
-   `—` ile durur" kararı ve `spec.md` §8'deki varsayım (somut alan listesi
-   verilmediği kabulü).
-2. Onay sonrası durum `approved` olur ve uygulama `ccode` profiline devredilir.
-   Uygulama `implementation-plan.md` §3 Adım 1'den başlar.
+Uygulama `ccode` profilinde `implementation-plan.md` §3 **Adım 1**'den başlar
+(`delta_fmt` üretimi / `BUG-001`). Adım sırası bağımlılığa göre kilitlidir,
+atlanmaz.
 
 ## Açık uçlar (bloklamıyor)
 

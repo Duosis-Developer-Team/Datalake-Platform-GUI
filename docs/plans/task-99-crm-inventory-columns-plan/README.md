@@ -14,9 +14,9 @@ ekranı kullanan ve çıktısını rapor olarak alan Bulutistan tarafı.
 - **Level:** 2 Standard
 - **Complexity:** medium
 - **Risk:** low
-- **Current phase:** planning
+- **Current phase:** implementation
 - **Current sprint:** n/a — L2'de sprint kavramı yok
-- **Status:** `draft`
+- **Status:** `approved` — 2026-08-07, Arca
 - **Created:** 2026-08-07
 - **Last updated:** 2026-08-07
 - **Classification gerekçesi:** Taban 4-15 dosya / 2 katman (GUI sunum +
@@ -75,10 +75,8 @@ uygulamayı bloklamıyor; `status.md` sonunda kayıtlı.
 
 ## Next Action
 
-Kullanıcı planı inceler — özellikle `ADR-001`'deki "ilgisiz kolon silinmez, `—` ile
-durur" kararı ve `spec.md` §8'deki "somut alan listesi verilmedi" varsayımı;
-onaydan sonra durum `approved` olur ve uygulama `ccode` profilinde
-`implementation-plan.md` §3 Adım 1'den başlar.
+Implementation agent (`ccode`) `implementation-plan.md` §3 **Adım 1**'den başlar
+(`delta_fmt` üretimi / `BUG-001`). Adım sırası bağımlılığa göre kilitlidir.
 
 ## Update Rules
 
