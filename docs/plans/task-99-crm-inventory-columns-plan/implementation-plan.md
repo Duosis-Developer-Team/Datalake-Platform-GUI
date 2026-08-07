@@ -163,12 +163,184 @@ bu dosya repoda takipli, **secret buraya yazılmaz** (`.env.local` kullanılır)
 
 ## 2. Değişiklik noktaları
 
-> spec.md onaylandıktan sonra doldurulacak.
+Karar dayanağı: `decisions.md` `ADR-001`. Requirement'lar: `spec.md`.
+
+### `src/components/crm_inventory_report.py`
+
+| # | Ne değişecek | Neden |
+|---|---|---|
+| D-1 | `delta_fmt` üretimi `prepare_service_row`'a eklenir (satır 622-677 dönüş dict'i) | `REQ-F-010` / `BUG-001` — kolon tanımlı, üreticisi yok |
+| D-2 | `_NUMERIC_COLS`'a (satır 107) `delta_fmt` eklenir | Sağa hizalama + genişlik kuralı bu sete bakıyor |
+| D-3 | Yeni sabitler: `_SPINE`, `_SPINE_OVERRIDES`, `_GROUP_BLOCKS` | `REQ-F-001`, `REQ-F-002`, `REQ-F-005` — omurga tek kaynak olur |
+| D-4 | `columns_for_family()` (satır 194-226) omurgadan türetir hale gelir | `REQ-F-001`–`REQ-F-004`; bugün 9 dallı `if` zinciri |
+| D-5 | Eski kolon sabitleri kaldırılır / bloklara dönüşür: `_BASE_COLUMNS`, `_VIRT_BASE_COLUMNS`, `_REPLICATION_COLUMNS`, `_NETBACKUP_COLUMNS`, `_COMPARISON_ONLY_COLUMNS`, `_OS_LICENCE_COLUMNS`, `_DUAL_TRACK_COLUMNS`, `_ALLOC_ONLY_COLUMNS` | Aynı bilgi iki yerde yaşamasın |
+| D-6 | `hide_used` semantiği değişir: **kolon düşürme → hücre boşaltma** (`build_report_table`, satır 782-806) | `REQ-F-004`; ayrıntı aşağıda **D-6 notu** |
+| D-7 | Yeni `flat_columns()`; `build_flat_view` (satır 1105) bunu kullanır | `REQ-F-006` — flat superset |
+| D-8 | `INVENTORY_REPORT_SCHEMA_VERSION` (satır 101) `v5` → `v6` | `REQ-NF-003`, `AC-008` |
+
+**D-6 notu — sessiz regresyon tuzağı.** Bugün `virt_*` aileleri için
+`build_family_accordion` (satır 1086) `hide_used=True` geçiyor ve
+`columns_for_family` kolonu **listeden siliyor**. Yeni kuralda kolon silinmediği
+için, `hide_used` hiçbir şey yapmazsa `Used` kolonu bu ailelerde **gerçek değerle
+görünmeye başlar**. `prepare_service_row` hücreyi yalnız satırın kendi
+`inventory_hide_used` bayrağı varsa boşaltıyor (satır 611-620) — çağıran tarafın
+geçtiği argümana bakmıyor. Bu yüzden `build_report_table`, `row_hide_used` doğruyken
+hazırlanmış satırların `used_fmt` değerini `"—\n—"` ile ezmelidir. Aksi hâlde
+sanallaştırma tablolarında bilinçli olarak gizlenmiş bir sayı geri gelir.
+
+### `src/pages/crm_inventory_overview.py`
+
+| # | Ne değişecek | Neden |
+|---|---|---|
+| D-9 | `_build_inventory_export_sheets` (satır 204-246) `Services` sayfasını `flat_columns()` sırası ve başlıklarıyla üretir | `REQ-F-007`, `AC-005` |
+| D-10 | Ham satırlar `Services_raw` sayfasına taşınır | `REQ-F-008`, `AC-006` |
+| D-11 | Export hücrelerindeki satır sonu (`\n`) ` · ` ile düzleştirilir | Ekranda `whiteSpace: pre-line` ile iki satır görünen blok (`50 TB\n500 TL`), Excel'de hücre içi kırılma, PDF'te `cell()` ile bozuk render veriyor |
+
+`REQ-F-009` gereği filtre/arama davranışı korunur — `filter_mode` ve `search`
+akışına dokunulmaz.
+
+### Dokunulmayacaklar
+
+`_UNMAPPED_COLUMNS`, `_PRODUCT_MATCHING_COLUMNS`, KPI kartları, accordion rozetleri
+(`_header_money_badges`), `src/services/api_client.py`, backend. Bkz. `spec.md` §7.
+
+---
 
 ## 3. Adımlar
 
-> spec.md onaylandıktan sonra doldurulacak.
+Sıra bağımlılığa göre. Her adımın kendi doğrulaması var; bir adım yeşil olmadan
+sonrakine geçilmez.
+
+### Adım 1 — `delta_fmt` üretimi (`BUG-001`)
+
+`prepare_service_row` dönüş dict'ine `delta_fmt` eklenir:
+`used_qty − crm_sold_qty`, işaretli, `display_unit` ile; iki değerden biri yoksa `—`.
+`_NUMERIC_COLS`'a `delta_fmt` eklenir (D-2).
+
+*Doğrulama:* `comparison_only` profilli sentetik satırla yeni test — kolon sayı
+gösteriyor, boş değil (`AC-007`). Mevcut 58 test yeşil kalmalı (bu adım hiçbir
+kolon listesine dokunmuyor).
+
+*Neden önce:* bağımsız, küçük, geri kalanı bloklamıyor; ayrıca tek başına da
+değerli bir düzeltme — sonraki adımlar takılırsa bu commit yine de gider.
+
+### Adım 2 — Omurga sabitleri
+
+`_SPINE`, `_SPINE_OVERRIDES`, `_GROUP_BLOCKS` yazılır (D-3). `columns_for_family()`
+henüz değişmez; sabitler eklenip mevcut davranış korunur.
+
+*Doğrulama:* `_SPINE_OVERRIDES` ve `_GROUP_BLOCKS` içindeki her `id`'nin
+`prepare_service_row` çıktısında karşılığı olduğunu doğrulayan test. Bu test
+`BUG-001`'in tekrarını önler — ölü kolon bir daha eklenemez.
+
+### Adım 3 — `columns_for_family()` yeniden yazımı
+
+Dokuz dallı `if` zinciri omurga + override + blok + `Birim Fiyat` birleşimine
+dönüşür (D-4). Eski sabitler kaldırılır (D-5).
+
+*Doğrulama:* `AC-001`, `AC-002`, `AC-003`. Test elle yazılmış beklenti listesiyle
+değil, **`_SPINE` sabitinin kendisiyle** karşılaştırır — aksi hâlde test sözleşmenin
+kopyası olur ve sözleşme bozulunca da beraber bozulur.
+
+### Adım 4 — `hide_used` semantiği
+
+`build_report_table` içinde kolon düşürme kaldırılır, `row_hide_used` doğruyken
+hazırlanan satırların `used_fmt` değeri `"—\n—"` ile ezilir (D-6).
+
+*Doğrulama:* `virt_*` ailesinden bir satırla test — `Used` kolonu **listede var**
+ve hücre `—`. Bu adım atlanırsa gizlenmiş sayı geri gelir; test bunu yakalar.
+
+### Adım 5 — Flat superset
+
+`flat_columns()` yazılır, `build_flat_view` ona bağlanır (D-7).
+
+*Doğrulama:* `AC-004` — 19 kolon, `spec.md` `REQ-F-006`'daki sırayla. Flat'te slot
+yeniden kullanımının **uygulanmadığı** ayrıca doğrulanır (`Total` ve `Tespit Edilen`
+ayrı kolonlar).
+
+### Adım 6 — Şema sürümü
+
+`INVENTORY_REPORT_SCHEMA_VERSION` → `inventory-column-spine-v6` (D-8).
+
+*Doğrulama:* `AC-008`; sabitin `v5` olmadığını kontrol eden test.
+
+### Adım 7 — Rapor çıktısı
+
+`_build_inventory_export_sheets` `Services` sayfasını `flat_columns()`'tan üretir,
+ham satırlar `Services_raw`'a taşınır, satır sonları düzleştirilir (D-9, D-10, D-11).
+
+*Doğrulama:* `AC-005`, `AC-006` — `Services` sayfasının kolon listesi
+`flat_columns()` başlıklarıyla birebir; `panel_key`, `sellable_profile`,
+`has_infra_source`, `inventory_free_mode`, `data_quality`, `used_is_allocation`
+bu sayfada yok. Mevcut `tests/test_crm_inventory_export.py` (3 test) güncellenir.
+
+### Adım 8 — Test paketi ve tarayıcı doğrulaması
+
+Kırılan testler yeni sözleşmeye göre güncellenir, silinmez (`AC-009`). Ardından
+uygulama çalıştırılıp dokuz grubun accordion'u açılır; ortak kolonların aynı
+indekste olduğu ve PDF'in 19 kolonla okunabilir olduğu görsel olarak doğrulanır
+(`REQ-NF-005`).
+
+*Doğrulama:* `testing-plan.md` §4 ve §5.
+
+---
 
 ## 4. Interfaces
 
-> spec.md onaylandıktan sonra doldurulacak.
+Yeni ve değişen imzalar. Kod değil, sözleşme.
+
+```python
+# --- Yeni sabitler (crm_inventory_report.py) ---
+
+# Slot sırası. Index = konum. Family yalnız flat view'da eklenir.
+_SPINE: list[dict[str, str]]
+# örn. [{"name": "Service", "id": "service_label"}, ..., {"name": "Unsold", "id": "unsold_fmt"}]
+
+# Profil bazlı slot yeniden kullanımı. Kapalı liste (REQ-F-005).
+# Anahtar: profil adı. Değer: {slot_index: {"name": ..., "id": ...}}
+_SPINE_OVERRIDES: dict[str, dict[int, dict[str, str]]]
+
+# Slot 7 ile Birim Fiyat arasına giren, gruba özel kolonlar.
+_GROUP_BLOCKS: dict[str, list[dict[str, str]]]
+
+
+# --- Değişen / yeni fonksiyonlar ---
+
+def columns_for_family(
+    family: str | None,
+    *,
+    hide_used: bool = False,
+) -> list[dict[str, str]]:
+    """İmza korunur. Davranış: omurga + override + gruba özel blok + Birim Fiyat.
+    `hide_used` artık kolon DÜŞÜRMEZ — hücre boşaltma build_report_table'da yapılır.
+    Parametre geriye dönük uyumluluk için durur ve kolon setini etkilemez."""
+
+
+def flat_columns() -> list[dict[str, str]]:
+    """Flat view'ın 19 kolonu: Family + omurga + tüm gruba özel blokların
+    birleşimi + Birim Fiyat. Slot yeniden kullanımı UYGULANMAZ (REQ-F-006).
+    Sıra sabittir; export bu listeden türer."""
+```
+
+**Veri şekli — `prepare_service_row` dönüşüne eklenen tek anahtar:**
+
+```python
+"delta_fmt": str   # "+12 vCPU" | "-3 TB" | "—"
+```
+
+**Export sayfa sözleşmesi (`_build_inventory_export_sheets` dönüşü):**
+
+| Sayfa | İçerik | Değişiklik |
+|---|---|---|
+| `Summary` | özet + export filtre bilgisi | değişmiyor |
+| `Services` | `flat_columns()` kolonları, o sırayla, ekran başlıklarıyla | **değişiyor** |
+| `Services_raw` | ham panel alanları + formatlanmış alanlar | **yeni** |
+| `CRM_only` | CRM-only satırlar | değişmiyor |
+| `Unmapped` | eşleşmeyen ürünler | değişmiyor |
+| `Families_summary` | aile bazlı özet | değişmiyor |
+| `Product_Matching` | ürün eşleştirme | değişmiyor |
+
+**Not — `AC-005` inceliği:** "birebir aynı" kolon listesi, sırası ve başlıkları için
+geçerlidir. Hücre **içeriği** düzleştirilir: ekranda iki satır görünen
+`50 TB\n500 TL` bloğu export'ta `50 TB · 500 TL` olur (D-11). Bu bilinçli bir
+sapmadır; `\n` Excel'de hücre kırıyor, PDF'te `cell()` ile bozuk render veriyor.
