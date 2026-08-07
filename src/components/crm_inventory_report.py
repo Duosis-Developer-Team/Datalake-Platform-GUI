@@ -42,7 +42,7 @@ _FLAT_EXTRA_COLUMN = {"name": "Family", "id": "family_label"}
 
 _FLAT_VIEW_FAMILY = "dual_track"
 
-INVENTORY_REPORT_SCHEMA_VERSION = "inventory-final-polish-v5"
+INVENTORY_REPORT_SCHEMA_VERSION = "inventory-column-spine-v6"
 
 _LEFT_COLS = frozenset({
     "service_label", "display_unit", "family_label", "product_name", "resource_unit",

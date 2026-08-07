@@ -663,3 +663,10 @@ def test_prepare_service_row_delta_fmt_dash_when_missing(): # TEST-U-008
         sellable_profile="comparison_only", used_qty=12.0, crm_sold_qty=None,
     ))
     assert row_no_crm["delta_fmt"] == "—"
+
+
+def test_schema_version_bumped_for_column_spine():  # TEST-R-002 (AC-008, RISK-002)
+    """The column schema changed (ADR-001); if this constant isn't bumped, a
+    browser that already rendered the old table can keep a stale DataTable
+    state pinned to the old column set (it's embedded in the table id)."""
+    assert INVENTORY_REPORT_SCHEMA_VERSION != "inventory-final-polish-v5"
