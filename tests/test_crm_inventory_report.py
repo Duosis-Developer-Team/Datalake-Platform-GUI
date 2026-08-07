@@ -597,3 +597,36 @@ def test_prepare_service_row_no_dedup_note_when_absent():
         inventory_free_mode="physical",
     ))
     assert row["total_fmt"] == "2,000 TB"
+
+
+def test_prepare_service_row_delta_fmt_signed(): # TEST-U-007 (BUG-001, AC-007)
+    """delta_fmt is produced (used_qty - crm_sold_qty), signed — the column was
+    defined with no producer, so comparison_only rows rendered it blank."""
+    row = prepare_service_row(_sample_row(
+        sellable_profile="comparison_only",
+        display_unit="vCPU",
+        used_qty=12.0,
+        crm_sold_qty=10.0,
+    ))
+    assert row["delta_fmt"] == "+2 vCPU"
+
+    row_negative = prepare_service_row(_sample_row(
+        sellable_profile="comparison_only",
+        display_unit="TB",
+        used_qty=7.0,
+        crm_sold_qty=10.0,
+    ))
+    assert row_negative["delta_fmt"] == "-3.00 TB"  # TB<10 keeps 2 decimals (_fmt_qty rule)
+
+
+def test_prepare_service_row_delta_fmt_dash_when_missing(): # TEST-U-008
+    """Missing used_qty or crm_sold_qty must not invent a number or leak None/nan."""
+    row_no_used = prepare_service_row(_sample_row(
+        sellable_profile="comparison_only", used_qty=None, crm_sold_qty=10.0,
+    ))
+    assert row_no_used["delta_fmt"] == "—"
+
+    row_no_crm = prepare_service_row(_sample_row(
+        sellable_profile="comparison_only", used_qty=12.0, crm_sold_qty=None,
+    ))
+    assert row_no_crm["delta_fmt"] == "—"

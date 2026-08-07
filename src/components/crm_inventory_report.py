@@ -109,7 +109,7 @@ _NUMERIC_COLS = frozenset({
     "pre_dedup_fmt", "post_dedup_fmt", "dedup_savings_fmt",
     "sellable_alloc_fmt", "sellable_max_fmt", "sellable_avg_fmt", "unit_price_fmt",
     "licence_detected_fmt", "licence_gap_fmt", "licence_gap_tl_fmt",
-    "entitled_qty", "entitled_amount_tl",
+    "entitled_qty", "entitled_amount_tl", "delta_fmt",
 })
 
 _TABLE_STYLE_TABLE = {
@@ -239,6 +239,18 @@ def _fmt_qty(value: Any, unit: str) -> str:
     if unit_l == "tb" and abs(v) < 10:
         return f"{v:,.2f} {unit}".strip()
     return f"{v:,.0f} {unit}".strip()
+
+
+def _fmt_signed_qty(value: Any, unit: str) -> str:
+    """Signed quantity for delta-style columns: "+12 vCPU" / "-3 TB" / "—"."""
+    try:
+        v = None if value is None else float(value)
+    except (TypeError, ValueError):
+        v = None
+    if v is None:
+        return "—"
+    formatted = _fmt_qty(v, unit)
+    return f"+{formatted}" if v > 0 else formatted
 
 
 _ZERO_SELLABLE_HINTS = {
@@ -548,6 +560,14 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
                 unsold_tl = recomputed
     hide_used = bool(row.get("inventory_hide_used"))
 
+    used_qty_f = _as_float(row.get("used_qty"))
+    crm_sold_qty_f = _as_float(row.get("crm_sold_qty"))
+    delta_fmt = (
+        _fmt_signed_qty(used_qty_f - crm_sold_qty_f, unit)
+        if used_qty_f is not None and crm_sold_qty_f is not None
+        else "—"
+    )
+
     unit_price_display = _catalog_unit_price(row)
     price_unit_label = _price_unit_label(row) or unit
 
@@ -666,6 +686,7 @@ def prepare_service_row(row: dict[str, Any]) -> dict[str, Any]:
             else "—"
         ),
         "unit_price_fmt": _fmt_unit_price(unit_price_display, price_unit_label),
+        "delta_fmt": delta_fmt,
         "status": status,
         "data_quality": data_quality,
         "sellable_profile": profile,
